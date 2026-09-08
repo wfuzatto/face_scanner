@@ -35,35 +35,6 @@ BLOCKED_NAME_LINES = {
     "PASSAPORTE",
 }
 
-FIELD_WORDS = {
-    "NOME",
-    "SOCIAL",
-    "CPF",
-    "FILIACAO",
-    "NASCIMENTO",
-    "NASC",
-    "VALIDADE",
-    "EMISSAO",
-    "EXPEDICAO",
-    "IDENTIDADE",
-    "REGISTRO",
-    "HABILITACAO",
-    "CATEGORIA",
-    "ASSINATURA",
-    "PORTADOR",
-    "LOCAL",
-    "DATA",
-    "DOC",
-    "DOCUMENTO",
-    "OBSERVACOES",
-    "OBSERVACAO",
-    "PERMISSAO",
-}
-
-NAME_LABEL_RE = re.compile(
-    r"(?i)\b(?:NOME\s+E\s+SOBRENOME|NOME\s+COMPLETO|NOME)\b\s*[:\-]?\s*"
-)
-
 
 class OCRService:
     def __init__(self, lang: str = "por+eng", tesseract_cmd: str = ""):
@@ -79,39 +50,32 @@ class OCRService:
             return False
 
     def extract(self, image, expected_name: str | None = None) -> OCRResult:
-        """Executa mais de uma segmentação e escolhe a leitura mais útil.
+        """OCR conservador usado antes da regressão.
 
-        CNH/CIN/RG têm muitos campos pequenos e layouts diferentes. PSM 6 funciona
-        bem em blocos; PSM 11 costuma recuperar melhor textos esparsos. Quando o
-        nome esperado da reserva existe, ele é usado apenas para escolher a melhor
-        leitura OCR, nunca para fabricar um nome que não tenha sido reconhecido.
+        Faz somente duas leituras PSM 6: imagem original e CLAHE. A escolha usa
+        exclusivamente a confiança reportada pelo Tesseract. ``expected_name`` é
+        aceito por compatibilidade com o serviço de documentos, mas não interfere
+        na escolha da leitura OCR.
         """
-        candidates: list[OCRResult] = []
-        for image_candidate in [image, enhance_for_ocr(image)]:
-            for psm in (6, 11):
-                candidates.append(self._extract_once(image_candidate, psm=psm))
+        best = None
+        best_score = -1.0
+        for candidate in [image, enhance_for_ocr(image)]:
+            result = self._extract_once(candidate)
+            score = sum(max(line.confidence, 0) for line in result.lines)
+            if score > best_score:
+                best = result
+                best_score = score
+        return best or OCRResult(text="", lines=[])
 
-        def score(result: OCRResult) -> float:
-            base = sum(max(line.confidence, 0) for line in result.lines)
-            if expected_name:
-                similarity = _best_expected_similarity(result, expected_name)
-                # O nome da reserva ajuda a selecionar entre leituras reais do
-                # Tesseract, mas não cria conteúdo inexistente.
-                base += similarity * 12.0
-            return base
-
-        return max(candidates, key=score, default=OCRResult(text="", lines=[]))
-
-    def _extract_once(self, image, psm: int = 6) -> OCRResult:
+    def _extract_once(self, image) -> OCRResult:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         data = pytesseract.image_to_data(
             rgb,
             lang=self.lang,
             output_type=Output.DICT,
-            config=f"--psm {psm}",
+            config="--psm 6",
         )
         grouped = {}
-        order = {}
         for i in range(len(data.get("text", []))):
             token = (data["text"][i] or "").strip()
             if not token:
@@ -126,13 +90,9 @@ class OCRService:
                 int(data["line_num"][i]),
             )
             grouped.setdefault(key, []).append((token, conf))
-            top = int(data.get("top", [0] * len(data["text"]))[i] or 0)
-            left = int(data.get("left", [0] * len(data["text"]))[i] or 0)
-            order.setdefault(key, (top, left))
 
         lines = []
-        for key in sorted(grouped, key=lambda item: order.get(item, (0, 0))):
-            items = grouped[key]
+        for items in grouped.values():
             text = " ".join(token for token, _ in items).strip()
             valid_conf = [conf for _, conf in items if conf >= 0]
             avg_conf = sum(valid_conf) / len(valid_conf) if valid_conf else 0.0
@@ -192,121 +152,44 @@ def _looks_like_name(value: str) -> bool:
         return False
     if re.search(r"\d", value):
         return False
-    if sum(token in FIELD_WORDS for token in tokens) >= 2:
-        return False
     return sum(ch.isalpha() for ch in value) >= max(6, int(len(value) * 0.6))
 
 
-def _candidate_fragments(line: str, expected_name: str | None = None) -> list[str]:
-    """Gera trechos plausíveis sem aceitar datas/campos vizinhos como nome."""
-    fragments: list[str] = []
-    stripped = line.strip()
-    if _looks_like_name(stripped):
-        fragments.append(stripped)
-
-    # Texto depois do rótulo NOME, apenas se continuar parecendo um nome.
-    match = NAME_LABEL_RE.search(stripped)
-    if match:
-        after = stripped[match.end() :].strip(" :-")
-        # Corta quando outro campo conhecido começa na mesma linha.
-        after = re.split(
-            r"(?i)\b(?:CPF|DATA|NASCIMENTO|VALIDADE|FILIACAO|DOC(?:UMENTO)?|IDENTIDADE|CATEGORIA|CAT\.?\s*HAB)\b",
-            after,
-            maxsplit=1,
-        )[0].strip(" :-")
-        if _looks_like_name(after):
-            fragments.append(after)
-
-    # Em OCR de documento é comum rótulo e vários campos caírem na mesma linha.
-    # Avalia janelas contíguas de palavras, mas somente trechos que isoladamente
-    # têm formato de nome. Isso evita o bug "NOME SOCIAL ... 24/05/2022".
-    if expected_name:
-        tokens = re.findall(r"[A-Za-zÀ-ÿ]+", stripped)
-        wanted = max(2, len(normalize_name(expected_name).split()))
-        min_size = max(2, wanted - 1)
-        max_size = min(7, wanted + 2)
-        for size in range(min_size, max_size + 1):
-            for start in range(0, max(0, len(tokens) - size + 1)):
-                fragment = " ".join(tokens[start : start + size])
-                if _looks_like_name(fragment):
-                    fragments.append(fragment)
-
-    # Preserva ordem removendo duplicatas normalizadas.
-    unique: list[str] = []
-    seen: set[str] = set()
-    for fragment in fragments:
-        key = normalize_name(fragment)
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(fragment)
-    return unique
-
-
-def _best_expected_similarity(ocr: OCRResult, expected_name: str) -> float:
-    from rapidfuzz import fuzz
-
-    expected = normalize_name(expected_name)
-    best = 0.0
-    for line in ocr.lines:
-        for fragment in _candidate_fragments(line.text, expected_name):
-            candidate = normalize_name(fragment)
-            best = max(
-                best,
-                float(fuzz.token_set_ratio(expected, candidate)),
-                float(fuzz.token_sort_ratio(expected, candidate)),
-            )
-    return best
-
-
-def extract_name_candidate(
-    ocr: OCRResult, expected_name: str | None = None
-) -> str | None:
+def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> str | None:
     lines = [line.text.strip() for line in ocr.lines if line.text.strip()]
-
-    # Se sabemos o nome da reserva, priorizamos um trecho efetivamente lido pelo
-    # OCR que seja compatível. Não retornamos simplesmente o rótulo NOME + lixo.
-    if expected_name:
-        from rapidfuzz import fuzz
-
-        expected = normalize_name(expected_name)
-        scored: list[tuple[float, str]] = []
-        for line in lines:
-            for fragment in _candidate_fragments(line, expected_name):
-                normalized = normalize_name(fragment)
-                score = max(
-                    fuzz.token_set_ratio(expected, normalized),
-                    fuzz.token_sort_ratio(expected, normalized),
-                )
-                scored.append((float(score), fragment))
-        if scored:
-            best_score, best_fragment = max(scored, key=lambda item: item[0])
-            if best_score >= 60:
-                return best_fragment
-
     normalized_lines = [normalize_name(line) for line in lines]
-    for idx, normalized in enumerate(normalized_lines):
-        if "NOME" not in normalized:
-            continue
 
-        raw = lines[idx]
-        match = NAME_LABEL_RE.search(raw)
-        if match:
-            same_line = raw[match.end() :].strip(" :-")
-            same_line = re.split(
-                r"(?i)\b(?:CPF|DATA|NASCIMENTO|VALIDADE|FILIACAO|DOC(?:UMENTO)?|IDENTIDADE|CATEGORIA|CAT\.?\s*HAB)\b",
-                same_line,
-                maxsplit=1,
-            )[0].strip(" :-")
-            # Correção do bug: antes qualquer texto com >=2 tokens era aceito.
+    for idx, normalized in enumerate(normalized_lines):
+        if normalized == "NOME" or normalized.endswith(" NOME") or normalized.startswith("NOME "):
+            raw = lines[idx]
+            same_line = re.sub(r"(?i)^.*?\bNOME\b\s*[:\-]?\s*", "", raw).strip()
+
+            # Mantém a correção de segurança: uma linha com data/números não pode
+            # ser promovida a nome somente por estar depois do rótulo NOME.
             if _looks_like_name(same_line):
                 return same_line
 
-        # Procura algumas linhas seguintes porque PSM 11 pode separar o rótulo
-        # do valor e inserir uma linha curta intermediária.
-        for offset in (1, 2):
-            candidate_idx = idx + offset
-            if candidate_idx < len(lines) and _looks_like_name(lines[candidate_idx]):
-                return lines[candidate_idx]
+            if idx + 1 < len(lines) and _looks_like_name(lines[idx + 1]):
+                return lines[idx + 1]
+
+    if expected_name:
+        from rapidfuzz import fuzz
+
+        scored = [
+            (
+                fuzz.token_set_ratio(
+                    normalize_name(expected_name),
+                    normalize_name(line),
+                ),
+                line,
+            )
+            for line in lines
+            if _looks_like_name(line)
+        ]
+        if scored:
+            score, line = max(scored, key=lambda item: item[0])
+            if score >= 60:
+                return line
 
     candidates = [line for line in lines if _looks_like_name(line)]
     return max(
