@@ -71,6 +71,8 @@ class FaceVerifyResponse(BaseModel):
     request_id: str
     verification_id: str
     status: FaceStatus
+    identity_verified: bool = False
+    provider: str = "not_run"
     similarity: float | None = None
     threshold: float | None = None
     review_threshold: float | None = None
