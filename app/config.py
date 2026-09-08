@@ -1,12 +1,15 @@
 from functools import lru_cache
 from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     app_env: str = "development"
     host: str = "0.0.0.0"
     port: int = 8091
     api_key: str = ""
+    dashboard_unauthenticated: bool = False
     allowed_origins: str = "http://127.0.0.1:3080,http://localhost:3080,http://127.0.0.1:8091,http://localhost:8091"
     max_upload_mb: int = 10
     session_ttl_seconds: int = 600
@@ -25,6 +28,7 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [item.strip() for item in self.allowed_origins.split(",") if item.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
