@@ -7,6 +7,11 @@ cd "$ROOT"
 START_PORT="${STANDALONE_PORT_START:-18092}"
 END_PORT="${STANDALONE_PORT_END:-18120}"
 HTTPS_PORT="${STANDALONE_HTTPS_PORT:-8445}"
+PREVIOUS_PORT=""
+
+if [[ -f .standalone-runtime.env ]]; then
+  PREVIOUS_PORT="$(grep -E '^STANDALONE_PORT=' .standalone-runtime.env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+fi
 
 if [[ -f .env ]]; then
   env_value() {
@@ -46,12 +51,23 @@ port_in_use() {
 }
 
 HTTP_PORT=""
-for p in $(seq "$START_PORT" "$END_PORT"); do
-  if ! port_in_use "$p"; then
-    HTTP_PORT="$p"
-    break
-  fi
-done
+
+# Reutiliza a porta do último start sempre que possível. Isso mantém estável a
+# integração do Totem com FACE_SCANNER_URL entre rebuilds do Face Scanner.
+if [[ "$PREVIOUS_PORT" =~ ^[0-9]+$ ]] \
+  && (( PREVIOUS_PORT >= START_PORT && PREVIOUS_PORT <= END_PORT )) \
+  && ! port_in_use "$PREVIOUS_PORT"; then
+  HTTP_PORT="$PREVIOUS_PORT"
+fi
+
+if [[ -z "$HTTP_PORT" ]]; then
+  for p in $(seq "$START_PORT" "$END_PORT"); do
+    if ! port_in_use "$p"; then
+      HTTP_PORT="$p"
+      break
+    fi
+  done
+fi
 
 if [[ -z "$HTTP_PORT" ]]; then
   echo "ERRO: nenhuma porta local livre entre $START_PORT e $END_PORT."
