@@ -52,47 +52,58 @@ Dashboard standalone:
 
 Os endpoints `/dashboard-api/*` só funcionam quando `DASHBOARD_UNAUTHENTICATED=true`. O `docker-compose.yml` standalone ativa isso explicitamente para teste. A chave da API nunca é enviada ao JavaScript do navegador.
 
-## Teste standalone com Docker
+## Teste standalone com HTTPS
+
+**O navegador deve acessar este módulo sempre por HTTPS.** A câmera (`getUserMedia`) depende de contexto seguro; por isso o HTTP standalone não é publicado na LAN.
+
+O Compose publica apenas um upstream local:
+
+```text
+127.0.0.1:8092 -> container:8091
+```
 
 No servidor de teste:
 
 ```bash
 git pull --ff-only origin main
-docker compose down
-docker compose up -d --build
+docker compose down --remove-orphans
+docker compose up -d --build --force-recreate
+chmod +x scripts/configure_https_standalone.sh
+./scripts/configure_https_standalone.sh
 ```
 
-Por padrão o standalone publica:
+O script usa o **Caddy já instalado no host**, preserva o Caddyfile existente, cria backup antes da alteração, valida a configuração e só então recarrega o serviço.
+
+Por padrão ele cria:
 
 ```text
-0.0.0.0:8092 -> container:8091
+https://IP_DO_SERVIDOR:8445
+        ↓
+Caddy do host
+        ↓
+http://127.0.0.1:8092
+        ↓
+Face Scanner Docker :8091
 ```
 
-Portanto, em uma máquina da mesma rede, acesse:
+No servidor `192.168.51.135`, a URL esperada é:
 
 ```text
-http://IP_DO_SERVIDOR:8092
+https://192.168.51.135:8445
 ```
 
-Exemplo no servidor `192.168.51.135`:
+A porta `8091` do host continua livre para outros serviços. A `8092` fica somente em loopback e não deve ser aberta diretamente no navegador.
 
-```text
-http://192.168.51.135:8092
-```
-
-A porta `8091` do host não é usada pelo standalone. Ela pode continuar pertencendo a outro serviço, enquanto o Face Scanner mantém `8091` somente dentro do próprio container.
-
-Para restringir o standalone ao próprio servidor, defina no `.env`:
+Configurações opcionais no `.env`:
 
 ```text
 STANDALONE_BIND=127.0.0.1
-```
-
-Para escolher outra porta de teste:
-
-```text
 STANDALONE_PORT=8092
+STANDALONE_HTTPS_HOST=192.168.51.135
+STANDALONE_HTTPS_PORT=8445
 ```
+
+O certificado é emitido pelo `tls internal` do Caddy existente. O dispositivo que abrir o dashboard deve confiar na CA local desse Caddy para que o navegador considere a origem segura sem erro de certificado.
 
 > O modo standalone sem autenticação do dashboard é somente para desenvolvimento/homologação em rede controlada. A API `/api/v1/*` continua usando `API_KEY` normalmente.
 
