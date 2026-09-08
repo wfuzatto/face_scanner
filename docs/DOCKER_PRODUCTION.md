@@ -10,13 +10,17 @@ Internet -> HTTPS :443 -> gateway -> face-scanner:8091
 
 A porta `8091` não deve ser publicada no host. O `docker-compose.yml` deste repositório é apenas para teste standalone e faz bind em `127.0.0.1`.
 
-## Segurança
+## Segurança e reprodutibilidade
 
 - container roda com usuário não-root;
 - `no-new-privileges` no Compose;
 - imagens/documentos não são persistidos quando `DEBUG_STORE_IMAGES=false`;
 - API key é injetada por ambiente;
-- healthcheck é obrigatório.
+- healthcheck é obrigatório;
+- o modelo YuNet é baixado no **build**, não na primeira requisição;
+- versão do modelo é fixada por commit do OpenCV Zoo e validada por SHA-256 antes de entrar na imagem.
+
+Assim, uma indisponibilidade externa depois que a imagem foi construída não impede o serviço de iniciar.
 
 ## GPU
 
