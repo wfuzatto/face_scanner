@@ -25,7 +25,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -66,11 +66,6 @@ def auth(
 
 
 def dashboard_access(cfg: Settings = Depends(get_settings)) -> None:
-    """Libera somente os endpoints do dashboard de teste quando explicitamente ativado.
-
-    A API de integração /api/v1 continua protegida por X-Face-Scanner-Key. O modo
-    standalone nunca envia a chave para o JavaScript do navegador.
-    """
     if not cfg.dashboard_unauthenticated:
         raise HTTPException(
             status_code=403,
@@ -296,6 +291,8 @@ async def _verify_face_impl(
             request_id=request_id,
             verification_id=verification_id,
             status="review",
+            identity_verified=False,
+            provider="not_run",
             quality=quality,
             liveness=LivenessResult(),
             message="A captura deve conter exatamente um rosto. Refaça a foto.",
@@ -314,6 +311,8 @@ async def _verify_face_impl(
             request_id=request_id,
             verification_id=verification_id,
             status="review",
+            identity_verified=False,
+            provider="not_run",
             quality=quality,
             liveness=LivenessResult(),
             message="Qualidade insuficiente. Refaça a captura.",
@@ -326,16 +325,30 @@ async def _verify_face_impl(
         verification_id=verification_id,
         selfie=raw,
     )
+
+    allowed_statuses = {"match", "review", "mismatch", "not_configured"}
+    provider_status = provider_result.status if provider_result.status in allowed_statuses else "review"
+    identity_verified = bool(provider_result.identity_verified and provider_status == "match")
+
+    if provider_status == "match" and not identity_verified:
+        provider_status = "review"
+
+    message = provider_result.message
+    if not identity_verified and provider_status == "not_configured":
+        message = "Captura com qualidade aprovada, mas a identidade NÃO foi verificada: provider biométrico não configurado."
+
     return FaceVerifyResponse(
         request_id=request_id,
         verification_id=verification_id,
-        status="not_configured",
-        similarity=None,
-        threshold=None,
-        review_threshold=None,
+        status=provider_status,
+        identity_verified=identity_verified,
+        provider=provider_result.provider,
+        similarity=provider_result.similarity,
+        threshold=provider_result.threshold,
+        review_threshold=provider_result.review_threshold,
         quality=quality,
         liveness=LivenessResult(),
-        message=provider_result.message,
+        message=message,
     )
 
 
