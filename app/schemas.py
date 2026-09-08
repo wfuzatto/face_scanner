@@ -18,6 +18,8 @@ class PortraitInfo(BaseModel):
     source: Literal["front", "back", "none"] = "none"
     bbox: list[int] | None = None
     detector_score: float | None = None
+    image_width: int | None = None
+    image_height: int | None = None
 
 
 class DocumentFields(BaseModel):
@@ -76,6 +78,9 @@ class FaceVerifyResponse(BaseModel):
     similarity: float | None = None
     threshold: float | None = None
     review_threshold: float | None = None
+    bbox: list[int] | None = None
+    image_width: int | None = None
+    image_height: int | None = None
     quality: ImageQuality
     liveness: LivenessResult = LivenessResult()
     message: str
