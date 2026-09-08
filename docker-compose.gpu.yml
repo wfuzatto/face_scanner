@@ -1,0 +1,11 @@
+services:
+  face-scanner:
+    # Use junto com docker-compose.yml somente em host com
+    # NVIDIA Driver + NVIDIA Container Toolkit.
+    # O código atual continua CPU-safe; este override apenas prepara
+    # o acesso à GPU para os providers acelerados que serão adicionados.
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${FACE_SCANNER_GPU_DEVICE:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      ACCELERATOR_PREFERENCE: cuda
