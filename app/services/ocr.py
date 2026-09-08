@@ -35,6 +35,21 @@ BLOCKED_NAME_LINES = {
     "PASSAPORTE",
 }
 
+NON_NAME_FIELD_PHRASES = {
+    "NOME E SOBRENOME",
+    "DATA LOCAL E UF DE NASCIMENTO",
+    "DATA EMISSAO",
+    "VALIDADE",
+    "DOC IDENTIDADE",
+    "ORG EMISSOR",
+    "N REGISTRO",
+    "CAT HAB",
+    "NACIONALIDADE",
+    "FILIACAO",
+    "ASSINATURA DO PORTADOR",
+    "OBSERVACOES",
+}
+
 
 class OCRService:
     def __init__(self, lang: str = "por+eng", tesseract_cmd: str = ""):
@@ -49,33 +64,71 @@ class OCRService:
         except Exception:
             return False
 
-    def extract(self, image, expected_name: str | None = None) -> OCRResult:
-        """OCR conservador usado antes da regressão.
+    def extract(self, image) -> OCRResult:
+        """OCR geral conservador: imagem original + CLAHE, ambos em PSM 6.
 
-        Faz somente duas leituras PSM 6: imagem original e CLAHE. A escolha usa
-        exclusivamente a confiança reportada pelo Tesseract. ``expected_name`` é
-        aceito por compatibilidade com o serviço de documentos, mas não interfere
-        na escolha da leitura OCR.
+        A escolha é feita somente pela confiança do Tesseract. O nome esperado da
+        reserva nunca participa desta etapa para não enviesar a leitura.
         """
         best = None
         best_score = -1.0
         for candidate in [image, enhance_for_ocr(image)]:
-            result = self._extract_once(candidate)
+            result = self._extract_once(candidate, psm=6)
             score = sum(max(line.confidence, 0) for line in result.lines)
             if score > best_score:
-                best = result
-                best_score = score
+                best, best_score = result, score
         return best or OCRResult(text="", lines=[])
 
-    def _extract_once(self, image) -> OCRResult:
+    def extract_cnh_top(self, image) -> OCRResult:
+        """OCR direcionado ao topo da CNH, onde ficam tipo e nome do titular.
+
+        A CNH antiga e a CNH atual concentram o nome na faixa superior. Ler só essa
+        área reduz bastante a interferência de filiação, datas, categorias e fundo
+        de segurança do documento.
+        """
+        h, w = image.shape[:2]
+        regions = [
+            image[int(h * 0.07) : int(h * 0.31), int(w * 0.06) : int(w * 0.95)],
+            image[int(h * 0.11) : int(h * 0.22), int(w * 0.12) : int(w * 0.86)],
+        ]
+
+        best = None
+        best_score = -1.0
+        for region in regions:
+            if region.size == 0:
+                continue
+            for candidate in [region, enhance_for_ocr(region)]:
+                enlarged = cv2.resize(
+                    candidate,
+                    None,
+                    fx=3.0,
+                    fy=3.0,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                result = self._extract_once(enlarged, psm=6)
+                normalized = normalize_name(result.text)
+                score = sum(max(line.confidence, 0) for line in result.lines)
+                if "HABILITACAO" in normalized or "DRIVER LICENSE" in normalized:
+                    score += 250
+                if "NOME E SOBRENOME" in normalized:
+                    score += 350
+                if extract_cnh_name_candidate(result):
+                    score += 500
+                if score > best_score:
+                    best, best_score = result, score
+
+        return best or OCRResult(text="", lines=[])
+
+    def _extract_once(self, image, psm: int = 6) -> OCRResult:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         data = pytesseract.image_to_data(
             rgb,
             lang=self.lang,
             output_type=Output.DICT,
-            config="--psm 6",
+            config=f"--psm {psm}",
         )
         grouped = {}
+        order = {}
         for i in range(len(data.get("text", []))):
             token = (data["text"][i] or "").strip()
             if not token:
@@ -90,9 +143,13 @@ class OCRService:
                 int(data["line_num"][i]),
             )
             grouped.setdefault(key, []).append((token, conf))
+            top = int(data.get("top", [0] * len(data["text"]))[i] or 0)
+            left = int(data.get("left", [0] * len(data["text"]))[i] or 0)
+            order.setdefault(key, (top, left))
 
         lines = []
-        for items in grouped.values():
+        for key in sorted(grouped, key=lambda item: order.get(item, (0, 0))):
+            items = grouped[key]
             text = " ".join(token for token, _ in items).strip()
             valid_conf = [conf for _, conf in items if conf >= 0]
             avg_conf = sum(valid_conf) / len(valid_conf) if valid_conf else 0.0
@@ -127,6 +184,7 @@ def detect_document_type(text: str, requested: str = "auto") -> str:
         "CARTEIRA NACIONAL DE HABILITACAO" in normalized
         or "DRIVER LICENSE" in normalized
         or "HABILITACAO" in normalized
+        or "PERMISSAO DE CONDUCAO" in normalized
     ):
         return "cnh"
     if (
@@ -145,6 +203,8 @@ def _looks_like_name(value: str) -> bool:
         return False
     if any(blocked in normalized for blocked in BLOCKED_NAME_LINES):
         return False
+    if any(phrase in normalized for phrase in NON_NAME_FIELD_PHRASES):
+        return False
     tokens = normalized.split()
     if not 2 <= len(tokens) <= 8:
         return False
@@ -155,20 +215,51 @@ def _looks_like_name(value: str) -> bool:
     return sum(ch.isalpha() for ch in value) >= max(6, int(len(value) * 0.6))
 
 
+def extract_cnh_name_candidate(ocr: OCRResult) -> str | None:
+    """Extrai o nome da faixa superior da CNH sem usar o nome da reserva."""
+    lines = [line for line in ocr.lines if line.text.strip()]
+    normalized = [normalize_name(line.text) for line in lines]
+
+    # Prioridade: valor logo abaixo do rótulo NOME E SOBRENOME.
+    for idx, text in enumerate(normalized):
+        if "NOME E SOBRENOME" not in text:
+            continue
+        for offset in (1, 2, 3):
+            pos = idx + offset
+            if pos < len(lines) and _looks_like_name(lines[pos].text):
+                return lines[pos].text.strip(" |:-")
+
+    # Fallback para rótulo NOME isolado.
+    for idx, text in enumerate(normalized):
+        if text == "NOME" or text.endswith(" NOME"):
+            for offset in (1, 2):
+                pos = idx + offset
+                if pos < len(lines) and _looks_like_name(lines[pos].text):
+                    return lines[pos].text.strip(" |:-")
+
+    # Sem rótulo confiável, escolhe a melhor linha plausível dentro da própria
+    # faixa superior. A confiança do OCR pesa mais que o tamanho do texto.
+    candidates = []
+    for line in lines:
+        if _looks_like_name(line.text):
+            token_count = len(normalize_name(line.text).split())
+            candidates.append((line.confidence + min(token_count, 6) * 2.0, line.text))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1].strip(" |:-")
+
+
 def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> str | None:
     lines = [line.text.strip() for line in ocr.lines if line.text.strip()]
     normalized_lines = [normalize_name(line) for line in lines]
 
     for idx, normalized in enumerate(normalized_lines):
-        if normalized == "NOME" or normalized.endswith(" NOME") or normalized.startswith("NOME "):
-            raw = lines[idx]
-            same_line = re.sub(r"(?i)^.*?\bNOME\b\s*[:\-]?\s*", "", raw).strip()
-
-            # Mantém a correção de segurança: uma linha com data/números não pode
-            # ser promovida a nome somente por estar depois do rótulo NOME.
-            if _looks_like_name(same_line):
-                return same_line
-
+        if "NOME E SOBRENOME" in normalized:
+            for offset in (1, 2):
+                candidate_idx = idx + offset
+                if candidate_idx < len(lines) and _looks_like_name(lines[candidate_idx]):
+                    return lines[candidate_idx]
+        if normalized == "NOME" or normalized.endswith(" NOME"):
             if idx + 1 < len(lines) and _looks_like_name(lines[idx + 1]):
                 return lines[idx + 1]
 
@@ -177,10 +268,7 @@ def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> 
 
         scored = [
             (
-                fuzz.token_set_ratio(
-                    normalize_name(expected_name),
-                    normalize_name(line),
-                ),
+                fuzz.token_set_ratio(normalize_name(expected_name), normalize_name(line)),
                 line,
             )
             for line in lines
