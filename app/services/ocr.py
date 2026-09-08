@@ -50,6 +50,9 @@ NON_NAME_FIELD_PHRASES = {
     "OBSERVACOES",
 }
 
+# Partículas legítimas que podem aparecer isoladas em nomes brasileiros.
+SINGLE_LETTER_NAME_PARTICLES = {"A", "D", "E", "O"}
+
 
 class OCRService:
     def __init__(self, lang: str = "por+eng", tesseract_cmd: str = ""):
@@ -80,12 +83,7 @@ class OCRService:
         return best or OCRResult(text="", lines=[])
 
     def extract_cnh_top(self, image) -> OCRResult:
-        """OCR direcionado ao topo da CNH, onde ficam tipo e nome do titular.
-
-        A CNH antiga e a CNH atual concentram o nome na faixa superior. Ler só essa
-        área reduz bastante a interferência de filiação, datas, categorias e fundo
-        de segurança do documento.
-        """
+        """OCR direcionado ao topo da CNH, onde ficam tipo e nome do titular."""
         h, w = image.shape[:2]
         regions = [
             image[int(h * 0.07) : int(h * 0.31), int(w * 0.06) : int(w * 0.95)],
@@ -208,11 +206,51 @@ def _looks_like_name(value: str) -> bool:
     tokens = normalized.split()
     if not 2 <= len(tokens) <= 8:
         return False
-    if any(len(token) == 1 for token in tokens):
+    if any(
+        len(token) == 1 and token not in SINGLE_LETTER_NAME_PARTICLES
+        for token in tokens
+    ):
         return False
     if re.search(r"\d", value):
         return False
     return sum(ch.isalpha() for ch in value) >= max(6, int(len(value) * 0.6))
+
+
+def _clean_cnh_name_value(value: str) -> str | None:
+    """Isola o valor do nome quando o Tesseract cola campos vizinhos na linha.
+
+    Exemplo real observado:
+    ``| NOME SOCIAL TESTE CENTO E DEZ | | 24/05/2022 |``
+    vira ``NOME SOCIAL TESTE CENTO E DEZ``.
+    """
+    candidate = str(value or "").strip(" |:-\t")
+    if not candidate:
+        return None
+
+    # Recorta campos numéricos que aparecem à direita da caixa do nome.
+    candidate = re.split(r"\|\s*\d", candidate, maxsplit=1)[0]
+    candidate = re.split(
+        r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b",
+        candidate,
+        maxsplit=1,
+    )[0]
+    candidate = re.split(
+        r"(?i)\b(?:CPF|DATA|NASCIMENTO|VALIDADE|FILIACAO|DOC(?:UMENTO)?|IDENTIDADE|CATEGORIA|CAT\.?\s*HAB)\b",
+        candidate,
+        maxsplit=1,
+    )[0]
+    candidate = candidate.strip(" |:-.,;\t")
+
+    # Alguns OCRs prefixam um caractere isolado antes da borda da caixa, como
+    # ``p | NOME ...``. Se NOME aparece logo no início, descartamos esse ruído.
+    nome_match = re.search(r"(?i)\bNOME\b", candidate)
+    if nome_match and nome_match.start() <= 6:
+        prefix = candidate[: nome_match.start()]
+        if not any(ch.isalpha() for ch in prefix) or len(prefix.strip(" |:-")) <= 1:
+            candidate = candidate[nome_match.start() :]
+
+    candidate = candidate.strip(" |:-.,;\t")
+    return candidate if _looks_like_name(candidate) else None
 
 
 def extract_cnh_name_candidate(ocr: OCRResult) -> str | None:
@@ -226,27 +264,31 @@ def extract_cnh_name_candidate(ocr: OCRResult) -> str | None:
             continue
         for offset in (1, 2, 3):
             pos = idx + offset
-            if pos < len(lines) and _looks_like_name(lines[pos].text):
-                return lines[pos].text.strip(" |:-")
+            if pos < len(lines):
+                cleaned = _clean_cnh_name_value(lines[pos].text)
+                if cleaned:
+                    return cleaned
 
     # Fallback para rótulo NOME isolado.
     for idx, text in enumerate(normalized):
         if text == "NOME" or text.endswith(" NOME"):
             for offset in (1, 2):
                 pos = idx + offset
-                if pos < len(lines) and _looks_like_name(lines[pos].text):
-                    return lines[pos].text.strip(" |:-")
+                if pos < len(lines):
+                    cleaned = _clean_cnh_name_value(lines[pos].text)
+                    if cleaned:
+                        return cleaned
 
-    # Sem rótulo confiável, escolhe a melhor linha plausível dentro da própria
-    # faixa superior. A confiança do OCR pesa mais que o tamanho do texto.
+    # Sem rótulo confiável, escolhe a melhor linha plausível dentro da faixa.
     candidates = []
     for line in lines:
-        if _looks_like_name(line.text):
-            token_count = len(normalize_name(line.text).split())
-            candidates.append((line.confidence + min(token_count, 6) * 2.0, line.text))
+        cleaned = _clean_cnh_name_value(line.text)
+        if cleaned:
+            token_count = len(normalize_name(cleaned).split())
+            candidates.append((line.confidence + min(token_count, 6) * 2.0, cleaned))
     if not candidates:
         return None
-    return max(candidates, key=lambda item: item[0])[1].strip(" |:-")
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> str | None:
@@ -257,11 +299,15 @@ def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> 
         if "NOME E SOBRENOME" in normalized:
             for offset in (1, 2):
                 candidate_idx = idx + offset
-                if candidate_idx < len(lines) and _looks_like_name(lines[candidate_idx]):
-                    return lines[candidate_idx]
+                if candidate_idx < len(lines):
+                    cleaned = _clean_cnh_name_value(lines[candidate_idx])
+                    if cleaned:
+                        return cleaned
         if normalized == "NOME" or normalized.endswith(" NOME"):
-            if idx + 1 < len(lines) and _looks_like_name(lines[idx + 1]):
-                return lines[idx + 1]
+            if idx + 1 < len(lines):
+                cleaned = _clean_cnh_name_value(lines[idx + 1])
+                if cleaned:
+                    return cleaned
 
     if expected_name:
         from rapidfuzz import fuzz
