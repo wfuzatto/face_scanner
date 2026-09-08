@@ -13,10 +13,10 @@ services:
       DASHBOARD_UNAUTHENTICATED: "true"
     volumes:
       - face_scanner_data:/app/data
-    # O HTTP do FastAPI é somente um upstream local para o Caddy do host.
-    # O navegador deve acessar o dashboard exclusivamente por HTTPS.
+    # HTTP somente como upstream local para o Caddy do host.
+    # O launcher HTTPS exporta STANDALONE_PORT dinamicamente quando necessário.
     ports:
-      - "${STANDALONE_BIND:-127.0.0.1}:${STANDALONE_PORT:-8092}:8091"
+      - "${STANDALONE_BIND:-127.0.0.1}:${STANDALONE_PORT:-18092}:8091"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/api/v1/health', timeout=4)"]
       interval: 15s
