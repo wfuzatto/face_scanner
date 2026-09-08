@@ -22,7 +22,7 @@ def test_extracts_cnh_holder_name_below_label():
     assert extract_cnh_name_candidate(ocr) == "NOME SOCIAL TESTE CENTO E DEZ"
 
 
-def test_rejects_date_as_name():
+def test_strips_date_joined_to_name():
     ocr = OCRResult(
         text="NOME\nSOCIAL TESTE CENTO E DEZ 24/05/2022",
         lines=[
@@ -31,7 +31,7 @@ def test_rejects_date_as_name():
         ],
     )
 
-    assert extract_name_candidate(ocr) is None
+    assert extract_name_candidate(ocr) == "SOCIAL TESTE CENTO E DEZ"
 
 
 def test_field_label_is_not_selected_as_name():
