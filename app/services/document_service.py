@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 from app.services.face_engine import FaceDetection, FaceDetector
 from app.services.name_matcher import match_name
-from app.services.ocr import OCRService, detect_document_type, parse_document_fields
+from app.services.ocr import (
+    OCRService,
+    detect_document_type,
+    extract_cnh_name_candidate,
+    parse_document_fields,
+)
 
 
 @dataclass
@@ -37,17 +42,25 @@ class DocumentService:
     ) -> DocumentAnalysis:
         warnings = []
 
-        # O nome da reserva ajuda somente a escolher, entre diferentes leituras
-        # reais do Tesseract, qual OCR é mais útil para este documento.
-        front_ocr = self.ocr.extract(front, expected_name=expected_name)
-        back_ocr = (
-            self.ocr.extract(back, expected_name=expected_name)
-            if back is not None
-            else None
-        )
+        # OCR geral sem qualquer influência do nome da reserva.
+        front_ocr = self.ocr.extract(front)
+        back_ocr = self.ocr.extract(back) if back is not None else None
 
-        merged_text = front_ocr.text + ("\n" + back_ocr.text if back_ocr else "")
+        # Para CNH/auto, lê também apenas a faixa superior. Essa leitura é usada
+        # tanto para reconhecer o tipo quanto para extrair o nome do titular com
+        # menos interferência do restante do documento.
+        cnh_top_ocr = None
+        if requested_type in {"auto", "cnh"}:
+            cnh_top_ocr = self.ocr.extract_cnh_top(front)
+
+        merged_text = front_ocr.text
+        if cnh_top_ocr is not None:
+            merged_text += "\n" + cnh_top_ocr.text
+        if back_ocr is not None:
+            merged_text += "\n" + back_ocr.text
+
         document_type = detect_document_type(merged_text, requested_type)
+
         mrz_ocr = (
             self.ocr.extract_passport_mrz(front)
             if document_type == "passport"
@@ -59,6 +72,16 @@ class DocumentService:
             expected_name,
             mrz_ocr=mrz_ocr,
         )
+
+        # CNH: o nome lido na faixa superior tem prioridade sobre o OCR geral.
+        if document_type == "cnh":
+            if cnh_top_ocr is None:
+                cnh_top_ocr = self.ocr.extract_cnh_top(front)
+            cnh_name = extract_cnh_name_candidate(cnh_top_ocr)
+            if cnh_name:
+                fields["name"] = cnh_name
+            else:
+                warnings.append("cnh_name_region_not_found")
 
         if not fields.get("name") and back_ocr is not None:
             back_fields = parse_document_fields(
