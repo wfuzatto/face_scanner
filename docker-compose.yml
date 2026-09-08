@@ -6,13 +6,17 @@ services:
     env_file:
       - .env
     environment:
+      APP_ENV: standalone
       SESSION_DB_PATH: /app/data/face_scanner.sqlite3
+      # Libera somente /dashboard-api/* para o dashboard de teste.
+      # /api/v1/* continua protegido pela API_KEY do .env.
+      DASHBOARD_UNAUTHENTICATED: "true"
     volumes:
       - face_scanner_data:/app/data
-    # Standalone: acessível apenas pelo próprio host.
-    # No HUB, nem esta porta é publicada; o gateway HTTPS chama a rede Docker.
+    # Standalone de teste. Usa 8092 no host porque 8091 pode estar ocupada
+    # por outro serviço. No HUB, esta publicação não é usada.
     ports:
-      - "127.0.0.1:8091:8091"
+      - "${STANDALONE_BIND:-0.0.0.0}:${STANDALONE_PORT:-8092}:8091"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/api/v1/health', timeout=4)"]
       interval: 15s
