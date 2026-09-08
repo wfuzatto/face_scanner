@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.providers.face_verification import DisabledFaceVerificationProvider
 from app.schemas import (
     DocumentAnalyzeResponse,
+    FacePreviewResponse,
     FaceVerifyResponse,
     HealthResponse,
     ImageQuality,
@@ -24,7 +25,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -203,6 +204,72 @@ async def dashboard_analyze_document(
         back,
         cfg,
     )
+
+
+async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewResponse:
+    """Valida presença/localização e qualidade sem identificar a pessoa nem consumir sessão."""
+    request_id = secrets.token_hex(8)
+    image, _ = await read_image(selfie, cfg)
+    h, w = image.shape[:2]
+
+    if not face_detector.ready:
+        raise HTTPException(status_code=503, detail="Detector facial não configurado")
+
+    detections = face_detector.detect(image)
+    if len(detections) != 1:
+        issue = "nenhum_rosto_detectado" if not detections else "mais_de_um_rosto_detectado"
+        return FacePreviewResponse(
+            request_id=request_id,
+            face_count=len(detections),
+            image_width=w,
+            image_height=h,
+            bbox=None,
+            detector_score=None,
+            quality=ImageQuality(
+                blur_score=0,
+                brightness=0,
+                face_ratio=0,
+                acceptable=False,
+                issues=[issue],
+            ),
+            message=(
+                "Posicione um rosto dentro da área indicada."
+                if not detections
+                else "A captura deve conter somente uma pessoa."
+            ),
+        )
+
+    detection = detections[0]
+    quality = ImageQuality(
+        **face_detector.quality(
+            image,
+            detection,
+            cfg.min_face_ratio,
+            cfg.min_blur_score,
+        )
+    )
+    return FacePreviewResponse(
+        request_id=request_id,
+        face_count=1,
+        image_width=w,
+        image_height=h,
+        bbox=detection.bbox,
+        detector_score=round(detection.score, 4),
+        quality=quality,
+        message="Captura pronta." if quality.acceptable else "Ajuste a captura antes de continuar.",
+    )
+
+
+@app.post(
+    "/api/v1/face/preview",
+    response_model=FacePreviewResponse,
+    dependencies=[Depends(auth)],
+)
+async def preview_face(
+    selfie: UploadFile = File(...),
+    cfg: Settings = Depends(get_settings),
+):
+    return await _preview_face_impl(selfie, cfg)
 
 
 async def _verify_face_impl(
