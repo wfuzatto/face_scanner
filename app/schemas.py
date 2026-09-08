@@ -31,7 +31,7 @@ class PortraitInfo(BaseModel):
     image_width: int | None = None
     image_height: int | None = None
     landmarks: dict[str, list[float]] | None = None
-    alignment: FaceAlignmentInfo = FaceAlignmentInfo()
+    alignment: FaceAlignmentInfo = Field(default_factory=FaceAlignmentInfo)
 
 
 class DocumentFields(BaseModel):
@@ -82,6 +82,11 @@ class LivenessResult(BaseModel):
     note: str = "Esta versão não executa PAD/liveness anti-spoofing certificado."
 
 
+class CheckinGateInfo(BaseModel):
+    allowed: bool = False
+    reasons: list[str] = Field(default_factory=list)
+
+
 class FaceVerifyResponse(BaseModel):
     request_id: str
     verification_id: str
@@ -95,9 +100,10 @@ class FaceVerifyResponse(BaseModel):
     image_width: int | None = None
     image_height: int | None = None
     landmarks: dict[str, list[float]] | None = None
-    alignment: FaceAlignmentInfo = FaceAlignmentInfo()
+    alignment: FaceAlignmentInfo = Field(default_factory=FaceAlignmentInfo)
     quality: ImageQuality
-    liveness: LivenessResult = LivenessResult()
+    liveness: LivenessResult = Field(default_factory=LivenessResult)
+    checkin_gate: CheckinGateInfo = Field(default_factory=CheckinGateInfo)
     message: str
 
 
