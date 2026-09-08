@@ -25,7 +25,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -136,6 +136,15 @@ async def _analyze_document_impl(
     )
     detection = analysis.portrait_detection
 
+    portrait_image = None
+    if detection is not None:
+        if analysis.portrait_source == "front":
+            portrait_image = front_image
+        elif analysis.portrait_source == "back":
+            portrait_image = back_image
+    portrait_height = int(portrait_image.shape[0]) if portrait_image is not None else None
+    portrait_width = int(portrait_image.shape[1]) if portrait_image is not None else None
+
     return DocumentAnalyzeResponse(
         request_id=request_id,
         verification_id=verification_id,
@@ -148,6 +157,8 @@ async def _analyze_document_impl(
             source=analysis.portrait_source if detection else "none",
             bbox=detection.bbox if detection else None,
             detector_score=round(detection.score, 4) if detection else None,
+            image_width=portrait_width,
+            image_height=portrait_height,
         ),
         can_verify_face=can_prepare_face,
         warnings=analysis.warnings,
@@ -277,6 +288,7 @@ async def _verify_face_impl(
         raise HTTPException(status_code=404, detail="Sessão inexistente ou expirada")
 
     image, raw = await read_image(selfie, cfg)
+    h, w = image.shape[:2]
     detections = face_detector.detect(image) if face_detector.ready else []
     if len(detections) != 1:
         issues = ["nenhum_rosto_detectado"] if not detections else ["mais_de_um_rosto_detectado"]
@@ -293,15 +305,19 @@ async def _verify_face_impl(
             status="review",
             identity_verified=False,
             provider="not_run",
+            bbox=None,
+            image_width=w,
+            image_height=h,
             quality=quality,
             liveness=LivenessResult(),
             message="A captura deve conter exatamente um rosto. Refaça a foto.",
         )
 
+    detection = detections[0]
     quality = ImageQuality(
         **face_detector.quality(
             image,
-            detections[0],
+            detection,
             cfg.min_face_ratio,
             cfg.min_blur_score,
         )
@@ -313,6 +329,9 @@ async def _verify_face_impl(
             status="review",
             identity_verified=False,
             provider="not_run",
+            bbox=detection.bbox,
+            image_width=w,
+            image_height=h,
             quality=quality,
             liveness=LivenessResult(),
             message="Qualidade insuficiente. Refaça a captura.",
@@ -346,6 +365,9 @@ async def _verify_face_impl(
         similarity=provider_result.similarity,
         threshold=provider_result.threshold,
         review_threshold=provider_result.review_threshold,
+        bbox=detection.bbox,
+        image_width=w,
+        image_height=h,
         quality=quality,
         liveness=LivenessResult(),
         message=message,
