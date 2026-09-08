@@ -24,7 +24,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -94,7 +94,10 @@ async def read_image(upload: UploadFile | None, cfg: Settings):
 
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/api/v1/health", response_model=HealthResponse)
@@ -249,8 +252,6 @@ async def _verify_face_impl(
             message="Qualidade insuficiente. Refaça a captura.",
         )
 
-    # Só consome depois que a captura passou pelos critérios técnicos. Isso
-    # permite retry de uma selfie ruim e mantém uso único para a etapa final.
     if sessions.consume(verification_id) is None:
         raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
 
