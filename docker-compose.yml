@@ -1,0 +1,9 @@
+services:
+  face-scanner:
+    build: .
+    container_name: face-scanner
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8091:8091"
