@@ -49,8 +49,6 @@ if ! systemctl is-active --quiet caddy; then
   exit 1
 fi
 
-# A porta HTTPS pode já estar ocupada pelo próprio Caddy; isso é aceitável
-# quando o bloco já existe. Outro processo não deve ser sobrescrito.
 listener="$(sudo ss -lntp 2>/dev/null | grep -E ":${HTTPS_PORT}[[:space:]]" || true)"
 if [[ -n "$listener" && "$listener" != *caddy* ]]; then
   echo "ERRO: porta HTTPS $HTTPS_PORT já está ocupada por outro processo:"
@@ -66,7 +64,6 @@ trap 'rm -f "$TMP"' EXIT
 
 sudo cp -a "$CADDYFILE" "$BACKUP"
 
-# Remove somente o bloco gerenciado por este projeto, preservando todo o resto.
 sudo awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '
   $0 == begin {skip=1; next}
   $0 == end {skip=0; next}
@@ -102,9 +99,8 @@ echo "Caddy configurado para o Face Scanner standalone."
 echo "URL HTTPS: https://${HTTPS_HOST}:${HTTPS_PORT}"
 echo "Upstream local: http://127.0.0.1:${HTTP_PORT}"
 echo "Backup: $BACKUP"
-
 echo
-echo=""
+
 if curl -kfsS --max-time 5 "https://${HTTPS_HOST}:${HTTPS_PORT}/api/v1/health" >/dev/null; then
   echo "Teste HTTPS: OK"
 else
