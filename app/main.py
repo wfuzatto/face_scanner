@@ -9,7 +9,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
 from app.providers.face_verification import DisabledFaceVerificationProvider
+from app.providers.liveness import DisabledLivenessProvider
 from app.schemas import (
+    CheckinGateInfo,
     DocumentAnalyzeResponse,
     FaceAlignmentInfo,
     FacePreviewResponse,
@@ -26,8 +28,9 @@ from app.services.face_engine import FaceDetector
 from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
+from app.services.verification_gate import evaluate_checkin_gate
 
-VERSION = "0.3.6"
+VERSION = "0.3.7"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -43,6 +46,7 @@ document_service = DocumentService(
 )
 sessions = SessionStore(settings.session_ttl_seconds, settings.session_db_path)
 face_verification_provider = DisabledFaceVerificationProvider()
+liveness_provider = DisabledLivenessProvider()
 
 app = FastAPI(
     title="Face Scanner",
@@ -103,6 +107,21 @@ def alignment_info(image, detection) -> FaceAlignmentInfo:
         transform=result.transform,
         message=result.message,
     )
+
+
+def liveness_info(verification_id: str, raw: bytes) -> LivenessResult:
+    result = liveness_provider.check(verification_id=verification_id, capture=raw)
+    status = result.status if result.status in {"not_checked", "passed", "failed"} else "not_checked"
+    return LivenessResult(status=status, method=result.method, note=result.message)
+
+
+def gate_info(document_name_status: str, identity_verified: bool, liveness: LivenessResult) -> CheckinGateInfo:
+    gate = evaluate_checkin_gate(
+        document_name_status=document_name_status,
+        identity_verified=identity_verified,
+        liveness_status=liveness.status,
+    )
+    return CheckinGateInfo(allowed=gate.allowed, reasons=gate.reasons)
 
 
 @app.get("/", include_in_schema=False)
@@ -197,14 +216,7 @@ async def analyze_document(
     back: UploadFile | None = File(default=None),
     cfg: Settings = Depends(get_settings),
 ):
-    return await _analyze_document_impl(
-        expected_name,
-        reservation_id,
-        document_type,
-        front,
-        back,
-        cfg,
-    )
+    return await _analyze_document_impl(expected_name, reservation_id, document_type, front, back, cfg)
 
 
 @app.post(
@@ -221,22 +233,13 @@ async def dashboard_analyze_document(
     back: UploadFile | None = File(default=None),
     cfg: Settings = Depends(get_settings),
 ):
-    return await _analyze_document_impl(
-        expected_name,
-        reservation_id,
-        document_type,
-        front,
-        back,
-        cfg,
-    )
+    return await _analyze_document_impl(expected_name, reservation_id, document_type, front, back, cfg)
 
 
 async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewResponse:
-    """Valida presença/localização e qualidade sem identificar a pessoa nem consumir sessão."""
     request_id = secrets.token_hex(8)
     image, _ = await read_image(selfie, cfg)
     h, w = image.shape[:2]
-
     if not face_detector.ready:
         raise HTTPException(status_code=503, detail="Detector facial não configurado")
 
@@ -251,29 +254,12 @@ async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewRe
             bbox=None,
             detector_score=None,
             landmarks=None,
-            quality=ImageQuality(
-                blur_score=0,
-                brightness=0,
-                face_ratio=0,
-                acceptable=False,
-                issues=[issue],
-            ),
-            message=(
-                "Posicione um rosto dentro da área indicada."
-                if not detections
-                else "A captura deve conter somente uma pessoa."
-            ),
+            quality=ImageQuality(blur_score=0, brightness=0, face_ratio=0, acceptable=False, issues=[issue]),
+            message="Posicione um rosto dentro da área indicada." if not detections else "A captura deve conter somente uma pessoa.",
         )
 
     detection = detections[0]
-    quality = ImageQuality(
-        **face_detector.quality(
-            image,
-            detection,
-            cfg.min_face_ratio,
-            cfg.min_blur_score,
-        )
-    )
+    quality = ImageQuality(**face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score))
     return FacePreviewResponse(
         request_id=request_id,
         face_count=1,
@@ -287,25 +273,15 @@ async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewRe
     )
 
 
-@app.post(
-    "/api/v1/face/preview",
-    response_model=FacePreviewResponse,
-    dependencies=[Depends(auth)],
-)
-async def preview_face(
-    selfie: UploadFile = File(...),
-    cfg: Settings = Depends(get_settings),
-):
+@app.post("/api/v1/face/preview", response_model=FacePreviewResponse, dependencies=[Depends(auth)])
+async def preview_face(selfie: UploadFile = File(...), cfg: Settings = Depends(get_settings)):
     return await _preview_face_impl(selfie, cfg)
 
 
-async def _verify_face_impl(
-    verification_id: str,
-    selfie: UploadFile,
-    cfg: Settings,
-) -> FaceVerifyResponse:
+async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Settings) -> FaceVerifyResponse:
     request_id = secrets.token_hex(8)
-    if sessions.get(verification_id) is None:
+    current_session = sessions.get(verification_id)
+    if current_session is None:
         raise HTTPException(status_code=404, detail="Sessão inexistente ou expirada")
 
     image, raw = await read_image(selfie, cfg)
@@ -313,13 +289,6 @@ async def _verify_face_impl(
     detections = face_detector.detect(image) if face_detector.ready else []
     if len(detections) != 1:
         issues = ["nenhum_rosto_detectado"] if not detections else ["mais_de_um_rosto_detectado"]
-        quality = ImageQuality(
-            blur_score=0,
-            brightness=0,
-            face_ratio=0,
-            acceptable=False,
-            issues=issues,
-        )
         return FaceVerifyResponse(
             request_id=request_id,
             verification_id=verification_id,
@@ -330,21 +299,15 @@ async def _verify_face_impl(
             image_width=w,
             image_height=h,
             landmarks=None,
-            quality=quality,
+            quality=ImageQuality(blur_score=0, brightness=0, face_ratio=0, acceptable=False, issues=issues),
             liveness=LivenessResult(),
+            checkin_gate=gate_info(current_session.name_status, False, LivenessResult()),
             message="A captura deve conter exatamente um rosto. Refaça a foto.",
         )
 
     detection = detections[0]
     aligned = alignment_info(image, detection)
-    quality = ImageQuality(
-        **face_detector.quality(
-            image,
-            detection,
-            cfg.min_face_ratio,
-            cfg.min_blur_score,
-        )
-    )
+    quality = ImageQuality(**face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score))
     if not quality.acceptable:
         return FaceVerifyResponse(
             request_id=request_id,
@@ -359,21 +322,20 @@ async def _verify_face_impl(
             alignment=aligned,
             quality=quality,
             liveness=LivenessResult(),
+            checkin_gate=gate_info(current_session.name_status, False, LivenessResult()),
             message="Qualidade insuficiente. Refaça a captura.",
         )
 
-    if sessions.consume(verification_id) is None:
+    session = sessions.consume(verification_id)
+    if session is None:
         raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
 
-    provider_result = face_verification_provider.verify(
-        verification_id=verification_id,
-        selfie=raw,
-    )
+    live_result = liveness_info(verification_id, raw)
+    provider_result = face_verification_provider.verify(verification_id=verification_id, selfie=raw)
 
     allowed_statuses = {"match", "review", "mismatch", "not_configured"}
     provider_status = provider_result.status if provider_result.status in allowed_statuses else "review"
     identity_verified = bool(provider_result.identity_verified and provider_status == "match")
-
     if provider_status == "match" and not identity_verified:
         provider_status = "review"
 
@@ -381,6 +343,7 @@ async def _verify_face_impl(
     if not identity_verified and provider_status == "not_configured":
         message = "Captura com qualidade aprovada, mas a identidade NÃO foi verificada: provider biométrico não configurado."
 
+    gate = gate_info(session.name_status, identity_verified, live_result)
     return FaceVerifyResponse(
         request_id=request_id,
         verification_id=verification_id,
@@ -396,16 +359,13 @@ async def _verify_face_impl(
         landmarks=detection.landmarks,
         alignment=aligned,
         quality=quality,
-        liveness=LivenessResult(),
+        liveness=live_result,
+        checkin_gate=gate,
         message=message,
     )
 
 
-@app.post(
-    "/api/v1/face/verify",
-    response_model=FaceVerifyResponse,
-    dependencies=[Depends(auth)],
-)
+@app.post("/api/v1/face/verify", response_model=FaceVerifyResponse, dependencies=[Depends(auth)])
 async def verify_face(
     verification_id: str = Form(min_length=12, max_length=128),
     selfie: UploadFile = File(...),
