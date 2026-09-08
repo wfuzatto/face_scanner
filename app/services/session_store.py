@@ -107,6 +107,23 @@ class SessionStore:
                 raise
         return item
 
+    def get(self, session_id: str) -> VerificationSession | None:
+        """Consulta sem consumir; usada enquanto a selfie ainda pode precisar de retry."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._purge_locked()
+                row = self._db.execute(
+                    "SELECT id, created_at, expires_at, reservation_id, name_status "
+                    "FROM verification_sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                self._db.execute("COMMIT")
+                return self._from_row(row) if row is not None else None
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
     def consume(self, session_id: str) -> VerificationSession | None:
         """Consome a sessão atomicamente; uma sessão nunca pode ser usada duas vezes."""
         with self._lock:

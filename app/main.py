@@ -16,7 +16,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -81,17 +81,24 @@ async def analyze_document(expected_name: str = Form(min_length=2, max_length=16
 @app.post("/api/v1/face/verify", response_model=FaceVerifyResponse, dependencies=[Depends(auth)])
 async def verify_face(verification_id: str = Form(min_length=12, max_length=128), selfie: UploadFile = File(...), cfg: Settings = Depends(get_settings)):
     request_id = secrets.token_hex(8)
-    item = sessions.consume(verification_id)
-    if item is None:
+    if sessions.get(verification_id) is None:
         raise HTTPException(status_code=404, detail="Sessão inexistente ou expirada")
+
     image, raw = await read_image(selfie, cfg)
     detections = face_detector.detect(image) if face_detector.ready else []
     if len(detections) != 1:
         issues = ["nenhum_rosto_detectado"] if not detections else ["mais_de_um_rosto_detectado"]
         quality = ImageQuality(blur_score=0, brightness=0, face_ratio=0, acceptable=False, issues=issues)
-        return FaceVerifyResponse(request_id=request_id, verification_id=verification_id, status="mismatch", quality=quality, liveness=LivenessResult(), message="A captura deve conter exatamente um rosto.")
+        return FaceVerifyResponse(request_id=request_id, verification_id=verification_id, status="review", quality=quality, liveness=LivenessResult(), message="A captura deve conter exatamente um rosto. Refaça a foto.")
+
     quality = ImageQuality(**face_detector.quality(image, detections[0], cfg.min_face_ratio, cfg.min_blur_score))
     if not quality.acceptable:
         return FaceVerifyResponse(request_id=request_id, verification_id=verification_id, status="review", quality=quality, liveness=LivenessResult(), message="Qualidade insuficiente. Refaça a captura.")
+
+    # Só consome depois que a captura passou pelos critérios técnicos. Isso
+    # permite retry de uma selfie ruim e mantém uso único para a etapa final.
+    if sessions.consume(verification_id) is None:
+        raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
+
     provider_result = face_verification_provider.verify(verification_id=verification_id, selfie=raw)
     return FaceVerifyResponse(request_id=request_id, verification_id=verification_id, status="not_configured", similarity=None, threshold=None, review_threshold=None, quality=quality, liveness=LivenessResult(), message=provider_result.message)
