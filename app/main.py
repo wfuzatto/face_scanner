@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.providers.face_verification import DisabledFaceVerificationProvider
 from app.schemas import (
     DocumentAnalyzeResponse,
+    FaceAlignmentInfo,
     FacePreviewResponse,
     FaceVerifyResponse,
     HealthResponse,
@@ -20,18 +21,20 @@ from app.schemas import (
     PortraitInfo,
 )
 from app.services.document_service import DocumentService
+from app.services.face_alignment import FaceAlignmentService
 from app.services.face_engine import FaceDetector
 from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
 settings = get_settings()
 ocr_service = OCRService(settings.ocr_lang, settings.tesseract_cmd)
 face_detector = FaceDetector(settings.face_detector_model, settings.face_detection_threshold)
+face_alignment = FaceAlignmentService()
 document_service = DocumentService(
     ocr_service,
     face_detector,
@@ -86,6 +89,20 @@ async def read_image(upload: UploadFile | None, cfg: Settings):
         return limit_long_edge(decode_image(data)), data
     except InvalidImage as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def alignment_info(image, detection) -> FaceAlignmentInfo:
+    if image is None or detection is None:
+        return FaceAlignmentInfo()
+    result = face_alignment.align(image, detection)
+    return FaceAlignmentInfo(
+        success=result.success,
+        width=result.width,
+        height=result.height,
+        jpeg_base64=result.jpeg_base64,
+        transform=result.transform,
+        message=result.message,
+    )
 
 
 @app.get("/", include_in_schema=False)
@@ -159,6 +176,8 @@ async def _analyze_document_impl(
             detector_score=round(detection.score, 4) if detection else None,
             image_width=portrait_width,
             image_height=portrait_height,
+            landmarks=detection.landmarks if detection else None,
+            alignment=alignment_info(portrait_image, detection),
         ),
         can_verify_face=can_prepare_face,
         warnings=analysis.warnings,
@@ -231,6 +250,7 @@ async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewRe
             image_height=h,
             bbox=None,
             detector_score=None,
+            landmarks=None,
             quality=ImageQuality(
                 blur_score=0,
                 brightness=0,
@@ -261,6 +281,7 @@ async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewRe
         image_height=h,
         bbox=detection.bbox,
         detector_score=round(detection.score, 4),
+        landmarks=detection.landmarks,
         quality=quality,
         message="Captura pronta." if quality.acceptable else "Ajuste a captura antes de continuar.",
     )
@@ -308,12 +329,14 @@ async def _verify_face_impl(
             bbox=None,
             image_width=w,
             image_height=h,
+            landmarks=None,
             quality=quality,
             liveness=LivenessResult(),
             message="A captura deve conter exatamente um rosto. Refaça a foto.",
         )
 
     detection = detections[0]
+    aligned = alignment_info(image, detection)
     quality = ImageQuality(
         **face_detector.quality(
             image,
@@ -332,6 +355,8 @@ async def _verify_face_impl(
             bbox=detection.bbox,
             image_width=w,
             image_height=h,
+            landmarks=detection.landmarks,
+            alignment=aligned,
             quality=quality,
             liveness=LivenessResult(),
             message="Qualidade insuficiente. Refaça a captura.",
@@ -368,6 +393,8 @@ async def _verify_face_impl(
         bbox=detection.bbox,
         image_width=w,
         image_height=h,
+        landmarks=detection.landmarks,
+        alignment=aligned,
         quality=quality,
         liveness=LivenessResult(),
         message=message,
