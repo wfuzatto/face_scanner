@@ -13,10 +13,10 @@ services:
       DASHBOARD_UNAUTHENTICATED: "true"
     volumes:
       - face_scanner_data:/app/data
-    # Standalone de teste. Usa 8092 no host porque 8091 pode estar ocupada
-    # por outro serviço. No HUB, esta publicação não é usada.
+    # O HTTP do FastAPI é somente um upstream local para o Caddy do host.
+    # O navegador deve acessar o dashboard exclusivamente por HTTPS.
     ports:
-      - "${STANDALONE_BIND:-0.0.0.0}:${STANDALONE_PORT:-8092}:8091"
+      - "${STANDALONE_BIND:-127.0.0.1}:${STANDALONE_PORT:-8092}:8091"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/api/v1/health', timeout=4)"]
       interval: 15s
