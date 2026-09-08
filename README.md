@@ -54,51 +54,47 @@ Os endpoints `/dashboard-api/*` só funcionam quando `DASHBOARD_UNAUTHENTICATED=
 
 ## Teste standalone com HTTPS
 
-**O navegador deve acessar este módulo sempre por HTTPS.** A câmera (`getUserMedia`) depende de contexto seguro; por isso o HTTP standalone não é publicado na LAN.
+**O navegador deve acessar este módulo sempre por HTTPS.** A câmera (`getUserMedia`) depende de contexto seguro; por isso o HTTP standalone nunca deve ser usado diretamente pelo navegador.
 
-O Compose publica apenas um upstream local:
-
-```text
-127.0.0.1:8092 -> container:8091
-```
-
-No servidor de teste:
+Use somente o launcher:
 
 ```bash
 git pull --ff-only origin main
-docker compose down --remove-orphans
-docker compose up -d --build --force-recreate
-chmod +x scripts/configure_https_standalone.sh
-./scripts/configure_https_standalone.sh
+chmod +x scripts/*.sh
+./scripts/start_standalone_https.sh
 ```
 
-O script usa o **Caddy já instalado no host**, preserva o Caddyfile existente, cria backup antes da alteração, valida a configuração e só então recarrega o serviço.
+O launcher:
 
-Por padrão ele cria:
+1. remove apenas instâncias antigas conhecidas do Face Scanner standalone;
+2. executa `docker compose down` somente deste projeto;
+3. procura automaticamente uma porta local livre entre `18092` e `18120`;
+4. publica o FastAPI somente em `127.0.0.1`;
+5. sobe/recria o container;
+6. aguarda o healthcheck;
+7. atualiza somente o bloco gerenciado do Face Scanner no Caddy existente;
+8. valida e recarrega o Caddy;
+9. informa a URL HTTPS final.
+
+Exemplo:
 
 ```text
-https://IP_DO_SERVIDOR:8445
+https://192.168.51.135:8445
         ↓
 Caddy do host
         ↓
-http://127.0.0.1:8092
+http://127.0.0.1:18092   (ou outra porta livre escolhida automaticamente)
         ↓
 Face Scanner Docker :8091
 ```
 
-No servidor `192.168.51.135`, a URL esperada é:
+O arquivo `.standalone-runtime.env` registra a porta local escolhida no último start e não contém API keys.
+
+Configurações opcionais:
 
 ```text
-https://192.168.51.135:8445
-```
-
-A porta `8091` do host continua livre para outros serviços. A `8092` fica somente em loopback e não deve ser aberta diretamente no navegador.
-
-Configurações opcionais no `.env`:
-
-```text
-STANDALONE_BIND=127.0.0.1
-STANDALONE_PORT=8092
+STANDALONE_PORT_START=18092
+STANDALONE_PORT_END=18120
 STANDALONE_HTTPS_HOST=192.168.51.135
 STANDALONE_HTTPS_PORT=8445
 ```
