@@ -1,4 +1,5 @@
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 NameStatus = Literal["match", "review", "mismatch", "not_found"]
@@ -13,6 +14,15 @@ class NameValidation(BaseModel):
     anchors_ok: bool = False
 
 
+class FaceAlignmentInfo(BaseModel):
+    success: bool = False
+    width: int | None = None
+    height: int | None = None
+    jpeg_base64: str | None = None
+    transform: list[list[float]] | None = None
+    message: str = "Alinhamento não executado."
+
+
 class PortraitInfo(BaseModel):
     found: bool
     source: Literal["front", "back", "none"] = "none"
@@ -20,6 +30,8 @@ class PortraitInfo(BaseModel):
     detector_score: float | None = None
     image_width: int | None = None
     image_height: int | None = None
+    landmarks: dict[str, list[float]] | None = None
+    alignment: FaceAlignmentInfo = FaceAlignmentInfo()
 
 
 class DocumentFields(BaseModel):
@@ -59,6 +71,7 @@ class FacePreviewResponse(BaseModel):
     image_height: int = Field(gt=0)
     bbox: list[int] | None = None
     detector_score: float | None = None
+    landmarks: dict[str, list[float]] | None = None
     quality: ImageQuality
     message: str
 
@@ -81,6 +94,8 @@ class FaceVerifyResponse(BaseModel):
     bbox: list[int] | None = None
     image_width: int | None = None
     image_height: int | None = None
+    landmarks: dict[str, list[float]] | None = None
+    alignment: FaceAlignmentInfo = FaceAlignmentInfo()
     quality: ImageQuality
     liveness: LivenessResult = LivenessResult()
     message: str
