@@ -16,7 +16,7 @@ from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -24,7 +24,7 @@ settings = get_settings()
 ocr_service = OCRService(settings.ocr_lang, settings.tesseract_cmd)
 face_detector = FaceDetector(settings.face_detector_model, settings.face_detection_threshold)
 document_service = DocumentService(ocr_service, face_detector, settings.name_match_threshold, settings.name_review_threshold)
-sessions = SessionStore(settings.session_ttl_seconds)
+sessions = SessionStore(settings.session_ttl_seconds, settings.session_db_path)
 face_verification_provider = DisabledFaceVerificationProvider()
 
 app = FastAPI(title="Face Scanner", version=VERSION, description="Validação documental e preparação de captura facial para Totem Hoteleiro/HUB")

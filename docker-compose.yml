@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      SESSION_DB_PATH: /app/data/face_scanner.sqlite3
+    volumes:
+      - face_scanner_data:/app/data
     # Standalone: acessível apenas pelo próprio host.
     # No HUB, nem esta porta é publicada; o gateway HTTPS chama a rede Docker.
     ports:
@@ -17,3 +21,6 @@ services:
       start_period: 30s
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  face_scanner_data:

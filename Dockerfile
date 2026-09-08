@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir . \
     && python scripts/download_models.py \
     && groupadd --system faceapp \
     && useradd --system --gid faceapp --home-dir /app --shell /usr/sbin/nologin faceapp \
+    && mkdir -p /app/data \
     && chown -R faceapp:faceapp /app
 
 USER faceapp

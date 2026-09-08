@@ -18,9 +18,10 @@ A porta `8091` não deve ser publicada no host. O `docker-compose.yml` deste rep
 - API key é injetada por ambiente;
 - healthcheck é obrigatório;
 - o modelo YuNet é baixado no **build**, não na primeira requisição;
-- versão do modelo é fixada por commit do OpenCV Zoo e validada por SHA-256 antes de entrar na imagem.
+- versão do modelo é fixada por commit do OpenCV Zoo e validada por SHA-256 antes de entrar na imagem;
+- somente os metadados temporários das sessões são persistidos em SQLite para sobreviver a restart do container.
 
-Assim, uma indisponibilidade externa depois que a imagem foi construída não impede o serviço de iniciar.
+O banco temporário de sessões contém identificador, timestamps, reserva e status da validação de nome. **Não contém foto, documento nem embedding facial**. O TTL continua sendo aplicado após restart.
 
 ## GPU
 

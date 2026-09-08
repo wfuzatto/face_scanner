@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://127.0.0.1:3080,http://localhost:3080,http://127.0.0.1:8091,http://localhost:8091"
     max_upload_mb: int = 10
     session_ttl_seconds: int = 600
+    session_db_path: Path = Path("data/face_scanner.sqlite3")
     ocr_lang: str = "por+eng"
     tesseract_cmd: str = ""
     face_detector_model: Path = Path("models/face_detection_yunet_2023mar.onnx")
