@@ -1,65 +1,42 @@
 # Handoff do motor biométrico
 
-O Face Scanner já prepara o fluxo sem tomar decisão de identidade.
+O Face Scanner 0.4.0 mantém o fluxo documental e de captura pronto para integração com um provider biométrico externo/homologado, sem confirmar identidade por conta própria.
 
-## Já implementado neste repositório
+## Já implementado
 
 - YuNet para detecção/localização facial.
 - Cinco landmarks por face: olhos, nariz e cantos da boca.
-- Alinhamento geométrico para uma prévia quadrada padronizada.
+- Alinhamento geométrico para prévia de homologação.
 - Qualidade: nitidez, brilho, proporção da face e quantidade de rostos.
-- Sessões temporárias e consumo único.
-- Contratos isolados em `app/biometric/contracts.py`.
-- Estados do provider: `match`, `review`, `mismatch`, `not_configured`.
+- Sessões temporárias com consumo único após a etapa de qualidade.
+- `retry_allowed=true` apenas quando a captura pode ser refeita sem consumir a sessão.
+- Contrato de provider em `app/providers/face_verification.py`.
+- Estados: `match`, `review`, `mismatch`, `not_configured`.
 - `identity_verified` fail-closed.
-- Contrato separado para liveness/PAD.
-- Helpers para FAR/FRR a partir de resultados já rotulados.
+- Metadados opcionais de provider/modelo/métrica/tempos na resposta.
+- Liveness/PAD separado e ainda `not_checked`.
 - Gate de check-in automático fail-closed.
 
-## Implementação que deve ser fornecida separadamente
+## Provider
 
-Preencher uma implementação concreta para os contratos:
+O provider padrão é `DisabledFaceVerificationProvider`, portanto a captura pode ser homologada sem que o sistema afirme identidade.
 
-- `EmbeddingEngine.embed(aligned_face)`
-- `SimilarityEngine.compare(document, live)`
-- `DecisionPolicy.decide(similarity)`
+Uma implementação externa deve respeitar `FaceVerificationProvider.verify(...)` e retornar `FaceVerificationResult`.
 
-O componente externo deverá fornecer, para cada tentativa, um resultado final compatível com:
+`identity_verified` só pode ser verdadeiro quando o status retornado for `match`. O Face Scanner normaliza qualquer inconsistência para fail-closed.
 
-```json
-{
-  "status": "match|review|mismatch",
-  "identity_verified": false,
-  "similarity": null,
-  "threshold": null,
-  "review_threshold": null,
-  "model": "...",
-  "model_version": "..."
-}
-```
+`match_threshold` é o nome canônico do limite de match. O campo `threshold` permanece apenas como alias de compatibilidade.
 
-`identity_verified` só pode ser `true` quando `status == "match"`.
+## Retry e sessão
 
-## Regras de integração
+- nenhum rosto, mais de um rosto ou qualidade insuficiente: `status=review`, `retry_allowed=true`, sessão preservada;
+- qualquer resultado recebido do provider: `retry_allowed=false`, sessão consumida;
+- uma sessão consumida não pode ser reutilizada.
 
-1. Não alterar YuNet, OCR, reserva ou captura para encaixar o motor.
-2. O motor deve receber apenas a face já preparada para sua etapa.
-3. Não persistir embeddings por padrão.
-4. Não registrar imagens, embeddings ou nomes completos em logs.
-5. Provider indisponível, timeout ou resposta inválida deve resultar em fail-closed.
-6. Manter três estados: `mismatch`, `review`, `match`.
-7. Liveness é independente da comparação facial.
-8. Check-in automático só pode ser liberado quando documento, identidade e liveness estiverem explicitamente aprovados.
+## Privacidade
 
-## Homologação
+Por padrão, não persistir imagens, faces alinhadas ou embeddings para implementar o provider. Não registrar imagens/base64/embeddings em logs.
 
-Antes de produção, gerar resultados rotulados fora deste repositório e alimentar os helpers de `app/metrics/classification.py` para medir:
+## Produção
 
-- true accept
-- true reject
-- false accept
-- false reject
-- FAR
-- FRR
-
-Os thresholds finais devem ser calibrados e homologados para o modelo e cenário reais antes de habilitar check-in automático.
+Liveness é independente da verificação do provider. O check-in automático permanece bloqueado enquanto `liveness.status != passed`, mesmo que um provider externo retorne match.
