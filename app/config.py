@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     tesseract_cmd: str = ""
     face_detector_model: Path = Path("models/face_detection_yunet_2023mar.onnx")
     face_detection_threshold: float = 0.85
+    face_verification_provider: str = "disabled"
+    face_mock_status: str = "review"
     name_match_threshold: float = 88.0
     name_review_threshold: float = 72.0
     min_face_ratio: float = 0.12
@@ -28,6 +30,10 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [item.strip() for item in self.allowed_origins.split(",") if item.strip()]
+
+    @property
+    def face_provider_mode(self) -> str:
+        return self.face_verification_provider.strip().lower()
 
 
 @lru_cache
