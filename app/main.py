@@ -70,13 +70,17 @@ if provider_mode == "internal":
             settings.face_embedding_model_name,
         )
         policy = ThreeWayDecisionPolicy(settings.face_review_threshold, settings.face_match_threshold)
-        if not policy.calibrated:
-            raise ValueError("FACE_REVIEW_THRESHOLD e FACE_MATCH_THRESHOLD devem ser configurados")
         face_verification_provider = InternalFaceVerificationProvider(
             BiometricPipeline(embedding_engine, CosineSimilarityEngine(), policy)
         )
         embedding_model_ready = embedding_engine.ready
         thresholds_configured = policy.calibrated
+        if not policy.calibrated:
+            logger.warning(
+                "provider internal em homologação técnica score-only: "
+                "thresholds não configurados; similaridade real será calculada, "
+                "mas identity_verified permanecerá false"
+            )
     except (FileNotFoundError, RuntimeError, ValueError, cv2.error) as exc:
         provider_config_error = f"provider internal indisponível: {type(exc).__name__}: {exc}"
         face_verification_provider = NotConfiguredFaceVerificationProvider("internal", "Provider interno não pôde ser inicializado.")

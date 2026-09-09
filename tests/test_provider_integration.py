@@ -25,3 +25,14 @@ def test_internal_review_never_verifies_identity():
             return type("Result", (), {"status": "review", "identity_verified": True, "similarity": .6, "match_threshold": .8, "review_threshold": .5, "metric": "cosine", "model": "test", "model_version": "1", "total_ms": 1, "embedding_document_ms": 0, "embedding_live_ms": 0, "similarity_ms": 0})()
     result = InternalFaceVerificationProvider(Pipeline()).verify(verification_id="x", selfie=b"", document_face=np.zeros(1), live_face=np.zeros(1))
     assert result.status == "review" and result.identity_verified is False
+
+
+def test_internal_score_only_preserves_real_score_without_identity_decision():
+    class Pipeline:
+        def compare(self, *_):
+            return type("Result", (), {"status": "not_configured", "identity_verified": False, "similarity": .731, "match_threshold": None, "review_threshold": None, "metric": "cosine_similarity", "model": "OpenCV SFace", "model_version": "2021dec", "total_ms": 1, "embedding_document_ms": .2, "embedding_live_ms": .2, "similarity_ms": .1})()
+    result = InternalFaceVerificationProvider(Pipeline()).verify(verification_id="x", selfie=b"", document_face=np.zeros(1), live_face=np.zeros(1))
+    assert result.status == "not_configured"
+    assert result.identity_verified is False
+    assert result.similarity == .731
+    assert result.metric == "cosine_similarity"

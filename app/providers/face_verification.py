@@ -151,12 +151,18 @@ class InternalFaceVerificationProvider:
                 self.provider, model, type(exc).__name__, detail or "no technical message",
             )
             return FaceVerificationResult("review", self.provider, False, "Falha no motor biométrico; identidade não verificada.")
-        status = result.status if result.status in {"match", "review", "mismatch"} else "review"
+        status = result.status if result.status in {"match", "review", "mismatch", "not_configured"} else "review"
+        message = (
+            "Comparação facial técnica concluída; score real calculado, "
+            "mas a decisão biométrica está desativada sem thresholds homologados."
+            if status == "not_configured"
+            else "Comparação facial concluída."
+        )
         return FaceVerificationResult(
             status=status,
             provider=self.provider,
             identity_verified=status == "match" and bool(result.identity_verified),
-            message="Comparação facial concluída.",
+            message=message,
             similarity=result.similarity,
             match_threshold=result.match_threshold,
             review_threshold=result.review_threshold,
