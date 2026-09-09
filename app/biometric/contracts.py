@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -13,11 +14,7 @@ class EmbeddingOutput:
 
 
 class EmbeddingEngine(Protocol):
-    """Ponto de extensão para o motor de representação facial.
-
-    A implementação real deve ser fornecida separadamente. O Face Scanner não
-    inclui um modelo que reconheça/identifique pessoas.
-    """
+    """Ponto de extensão para o motor de representação facial."""
 
     def embed(self, aligned_face: np.ndarray) -> EmbeddingOutput:
         ...
