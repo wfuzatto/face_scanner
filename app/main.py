@@ -30,7 +30,7 @@ from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 from app.services.verification_gate import evaluate_checkin_gate
 
-VERSION = "0.3.7"
+VERSION = "0.4.0"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -98,7 +98,11 @@ async def read_image(upload: UploadFile | None, cfg: Settings):
 def alignment_info(image, detection) -> FaceAlignmentInfo:
     if image is None or detection is None:
         return FaceAlignmentInfo()
-    result = face_alignment.align(image, detection)
+    try:
+        result = face_alignment.align(image, detection)
+    except Exception as exc:
+        logger.warning("preview face alignment unavailable: %s", exc)
+        return FaceAlignmentInfo(success=False, message="Preview de alinhamento indisponível.")
     return FaceAlignmentInfo(
         success=result.success,
         width=result.width,
@@ -142,6 +146,9 @@ def health():
         face_engine_ready=face_detector.ready,
         face_detector_model=settings.face_detector_model.exists(),
         face_recognizer_model=False,
+        embedding_model_ready=False,
+        provider_configured=False,
+        thresholds_configured=False,
         sessions_active=sessions.count(),
     )
 
@@ -294,6 +301,7 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
             verification_id=verification_id,
             status="review",
             identity_verified=False,
+            retry_allowed=True,
             provider="not_run",
             bbox=None,
             image_width=w,
@@ -314,6 +322,7 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
             verification_id=verification_id,
             status="review",
             identity_verified=False,
+            retry_allowed=True,
             provider="not_run",
             bbox=detection.bbox,
             image_width=w,
@@ -331,7 +340,10 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
         raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
 
     live_result = liveness_info(verification_id, raw)
-    provider_result = face_verification_provider.verify(verification_id=verification_id, selfie=raw)
+    provider_result = face_verification_provider.verify(
+        verification_id=verification_id,
+        selfie=raw,
+    )
 
     allowed_statuses = {"match", "review", "mismatch", "not_configured"}
     provider_status = provider_result.status if provider_result.status in allowed_statuses else "review"
@@ -349,10 +361,19 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
         verification_id=verification_id,
         status=provider_status,
         identity_verified=identity_verified,
+        retry_allowed=False,
         provider=provider_result.provider,
         similarity=provider_result.similarity,
-        threshold=provider_result.threshold,
+        threshold=provider_result.match_threshold,
         review_threshold=provider_result.review_threshold,
+        match_threshold=provider_result.match_threshold,
+        metric=provider_result.metric,
+        model=provider_result.model,
+        model_version=provider_result.model_version,
+        processing_ms=provider_result.processing_ms,
+        embedding_document_ms=provider_result.embedding_document_ms,
+        embedding_live_ms=provider_result.embedding_live_ms,
+        similarity_ms=provider_result.similarity_ms,
         bbox=detection.bbox,
         image_width=w,
         image_height=h,
