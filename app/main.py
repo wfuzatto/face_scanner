@@ -388,6 +388,19 @@ async def preview_face(selfie: UploadFile = File(...), cfg: Settings = Depends(g
     return await _preview_face_impl(selfie, cfg)
 
 
+@app.post(
+    "/dashboard-api/face/preview",
+    response_model=FacePreviewResponse,
+    dependencies=[Depends(dashboard_access)],
+    include_in_schema=False,
+)
+async def dashboard_preview_face(
+    selfie: UploadFile = File(...),
+    cfg: Settings = Depends(get_settings),
+):
+    return await _preview_face_impl(selfie, cfg)
+
+
 async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Settings) -> FaceVerifyResponse:
     request_id = secrets.token_hex(8)
     current_session = sessions.get(verification_id)
