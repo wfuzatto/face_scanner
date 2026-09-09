@@ -1,1 +1,143 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Face Scanner</title><link rel="stylesheet" href="static/styles.css?v=0.3.3"></head><body><main class="shell"><header><div><span class="eyebrow">TOTEM HOTELEIRO · MÓDULO</span><h1>Face Scanner</h1><p>Validação de documento, nome da reserva e preparação da captura facial.</p></div><div><div id="health" class="pill">verificando serviço…</div><div id="version" style="text-align:right;margin-top:8px;font-size:12px;color:#607080">carregando versão…</div></div></header><section class="card"><div class="step">1</div><div class="content"><h2>Documento do hóspede</h2><div class="grid"><label>Nome na reserva<input id="expectedName" value="Carlos Eduardo Silva" autocomplete="off"></label><label>Reserva<input id="reservationId" value="RES-20080" autocomplete="off"></label><label>Tipo<select id="documentType"><option value="auto">Detectar automaticamente</option><option value="passport">Passaporte</option><option value="cnh">CNH</option><option value="rg">RG</option><option value="cin">CIN</option></select></label><label>Frente / página com foto<input id="front" type="file" accept="image/jpeg,image/png,image/webp"></label><label>Verso (opcional)<input id="back" type="file" accept="image/jpeg,image/png,image/webp"></label></div><button id="analyze">Analisar documento</button><pre id="documentResult" class="result">Aguardando documento…</pre></div></section><section class="card"><div class="step">2</div><div class="content"><h2>Foto ao vivo</h2><p class="muted">A câmera é usada no navegador; esta versão valida enquadramento/qualidade e entrega a captura ao provider biométrico configurado.</p><div class="camera-wrap"><video id="video" autoplay playsinline muted></video><canvas id="canvas" hidden></canvas></div><div class="actions"><button id="startCamera" class="secondary">Abrir câmera</button><button id="verify" disabled>Capturar</button></div><pre id="faceResult" class="result">Primeiro valide o documento.</pre></div></section><footer><strong>Privacidade por padrão:</strong> o serviço não persiste imagens por padrão e o provider biométrico vem desativado.</footer></main><script src="static/app.js?v=0.3.3"></script></body></html>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Face Scanner</title>
+  <link rel="stylesheet" href="static/styles.css?v=0.5.0-r2">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Totem Hoteleiro · Módulo independente</div>
+        <h1>Face Scanner</h1>
+        <p class="lead">OCR do documento, validação do nome e comparação biométrica com SFace.</p>
+      </div>
+      <div class="service-box">
+        <div id="health" class="pill">verificando serviço…</div>
+        <div id="version" class="version">carregando versão…</div>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="step">1</div>
+      <div class="content">
+        <h2>Documento do hóspede</h2>
+        <div class="grid">
+          <label>Nome esperado
+            <input id="expectedName" value="Rafael Almeida" autocomplete="off">
+          </label>
+          <label>Reserva / referência
+            <input id="reservationId" value="RES-20080" autocomplete="off">
+          </label>
+        </div>
+        <div class="grid three">
+          <label>Tipo
+            <select id="documentType">
+              <option value="auto">Detectar automaticamente</option>
+              <option value="cnh">CNH</option>
+              <option value="rg">RG</option>
+              <option value="cin">CIN</option>
+              <option value="passport">Passaporte</option>
+            </select>
+          </label>
+          <label>Frente / página com foto
+            <input id="front" type="file" accept="image/jpeg,image/png,image/webp">
+          </label>
+          <label>Verso (opcional)
+            <input id="back" type="file" accept="image/jpeg,image/png,image/webp">
+          </label>
+        </div>
+        <button id="analyze">Analisar documento</button>
+        <div id="documentDecision" class="status muted">Aguardando documento.</div>
+        <pre id="documentResult" class="result">Aguardando documento…</pre>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="step">2</div>
+      <div class="content">
+        <h2>Foto ao vivo e decisão biométrica</h2>
+        <div class="notice">A captura é comparada pelo provider biométrico configurado. Em homologação, o resultado usa os thresholds definidos no serviço.</div>
+        <div class="notice warn">Liveness/PAD continua independente da comparação facial. Se não estiver configurado, o gate final de check-in permanece bloqueado.</div>
+
+        <div class="camera-wrap">
+          <video id="video" autoplay playsinline muted class="hidden"></video>
+          <canvas id="canvas" class="hidden"></canvas>
+          <div id="cameraPlaceholder" class="camera-placeholder">Valide primeiro o documento para liberar a câmera.</div>
+        </div>
+        <div class="actions">
+          <button id="startCamera" class="secondary" disabled>Abrir câmera</button>
+          <button id="verify" disabled>Capturar e comparar</button>
+          <button id="stopCamera" class="secondary" disabled>Fechar câmera</button>
+        </div>
+        <div id="faceDecision" class="status muted">Documento ainda não liberou a etapa facial.</div>
+        <pre id="faceResult" class="result">Primeiro valide o documento.</pre>
+
+        <div id="metrics" class="metrics hidden">
+          <h3>Resultado biométrico</h3>
+          <dl>
+            <dt>Provider</dt><dd id="metricProvider">—</dd>
+            <dt>Modelo</dt><dd id="metricModel">—</dd>
+            <dt>Versão</dt><dd id="metricVersion">—</dd>
+            <dt>Similaridade</dt><dd id="metricSimilarity">—</dd>
+            <dt>Review threshold</dt><dd id="metricReview">—</dd>
+            <dt>Match threshold</dt><dd id="metricMatch">—</dd>
+            <dt>Tentativas</dt><dd id="metricAttempts">—</dd>
+            <dt>Restantes</dt><dd id="metricRemaining">—</dd>
+            <dt>Liveness</dt><dd id="metricLiveness">—</dd>
+            <dt>Gate check-in</dt><dd id="metricGate">—</dd>
+            <dt>Processamento</dt><dd id="metricProcessing">—</dd>
+          </dl>
+        </div>
+
+        <div id="comparison" class="comparison hidden">
+          <h3>Rostos detectados e alinhados</h3>
+          <p class="muted">Previews para homologação técnica. A decisão é feita pelo pipeline biométrico, não pela inspeção visual destas imagens.</p>
+          <div class="comparison-grid">
+            <div class="snapshot">
+              <div class="snapshot-title">Foto do documento</div>
+              <div class="snapshot-frame">
+                <img id="documentFaceImg" alt="Rosto detectado no documento" class="hidden">
+                <div id="documentFacePlaceholder" class="snapshot-placeholder">Aguardando rosto do documento.</div>
+              </div>
+              <div id="documentFaceMeta" class="snapshot-meta">Aguardando detecção no documento.</div>
+            </div>
+
+            <div class="snapshot">
+              <div class="snapshot-title">Documento alinhado</div>
+              <div class="snapshot-frame">
+                <img id="documentAlignedImg" alt="Face do documento alinhada" class="hidden">
+                <div id="documentAlignedPlaceholder" class="snapshot-placeholder">Aguardando alinhamento do documento.</div>
+              </div>
+              <div id="documentAlignedMeta" class="snapshot-meta">Aguardando alinhamento do documento.</div>
+            </div>
+
+            <div class="snapshot">
+              <div class="snapshot-title">Webcam alinhada</div>
+              <div class="snapshot-frame">
+                <img id="liveAlignedImg" alt="Face da webcam alinhada" class="hidden">
+                <div id="liveAlignedPlaceholder" class="snapshot-placeholder">Aguardando alinhamento da webcam.</div>
+              </div>
+              <div id="liveAlignedMeta" class="snapshot-meta">Aguardando alinhamento da webcam.</div>
+            </div>
+
+            <div class="snapshot">
+              <div class="snapshot-title">Foto da webcam</div>
+              <div class="snapshot-frame">
+                <img id="liveFaceImg" alt="Rosto detectado na webcam" class="hidden">
+                <div id="liveFacePlaceholder" class="snapshot-placeholder">Aguardando captura da webcam.</div>
+              </div>
+              <div id="liveFaceMeta" class="snapshot-meta">Aguardando captura da webcam.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer"><strong>Privacidade:</strong> imagens e embeddings não são persistidos pelo fluxo padrão do Face Scanner.</div>
+  </main>
+  <script src="static/app.js?v=0.5.0-r2"></script>
+</body>
+</html>
