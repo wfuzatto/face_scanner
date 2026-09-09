@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
-from app.providers.face_verification import DisabledFaceVerificationProvider
+from app.providers.face_verification import DisabledFaceVerificationProvider, MockFaceVerificationProvider
 from app.providers.liveness import DisabledLivenessProvider
 from app.schemas import (
     CheckinGateInfo,
@@ -30,7 +30,7 @@ from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
 from app.services.verification_gate import evaluate_checkin_gate
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -45,7 +45,32 @@ document_service = DocumentService(
     settings.name_review_threshold,
 )
 sessions = SessionStore(settings.session_ttl_seconds, settings.session_db_path)
-face_verification_provider = DisabledFaceVerificationProvider()
+
+provider_mode = settings.face_provider_mode
+provider_config_error: str | None = None
+if provider_mode == "mock":
+    if settings.app_env.strip().lower() not in {"development", "homologation", "test"}:
+        provider_config_error = "provider mock é permitido somente em development/homologation/test"
+        face_verification_provider = DisabledFaceVerificationProvider()
+        logger.error(provider_config_error)
+    else:
+        try:
+            face_verification_provider = MockFaceVerificationProvider(settings.face_mock_status)
+            logger.warning(
+                "FACE VERIFICATION EM MODO MOCK DE HOMOLOGAÇÃO: status=%s; nenhuma identidade é comparada",
+                settings.face_mock_status,
+            )
+        except ValueError as exc:
+            provider_config_error = str(exc)
+            face_verification_provider = DisabledFaceVerificationProvider()
+            logger.error("Configuração de provider inválida: %s", exc)
+elif provider_mode == "disabled":
+    face_verification_provider = DisabledFaceVerificationProvider()
+else:
+    provider_config_error = f"FACE_VERIFICATION_PROVIDER não suportado: {provider_mode}"
+    face_verification_provider = DisabledFaceVerificationProvider()
+    logger.error(provider_config_error)
+
 liveness_provider = DisabledLivenessProvider()
 
 app = FastAPI(
@@ -138,17 +163,18 @@ def index():
 
 @app.get("/api/v1/health", response_model=HealthResponse)
 def health():
-    ready = ocr_service.ready() and face_detector.ready
+    core_ready = ocr_service.ready() and face_detector.ready
+    mock_ready = provider_mode == "mock" and provider_config_error is None
     return HealthResponse(
-        status="ok" if ready else "degraded",
+        status="ok" if core_ready and provider_config_error is None else "degraded",
         version=VERSION,
         ocr_ready=ocr_service.ready(),
         face_engine_ready=face_detector.ready,
         face_detector_model=settings.face_detector_model.exists(),
         face_recognizer_model=False,
         embedding_model_ready=False,
-        provider_configured=False,
-        thresholds_configured=False,
+        provider_configured=mock_ready,
+        thresholds_configured=mock_ready,
         sessions_active=sessions.count(),
     )
 
