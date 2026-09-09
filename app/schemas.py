@@ -93,6 +93,9 @@ class FaceVerifyResponse(BaseModel):
     status: FaceStatus
     identity_verified: bool = False
     retry_allowed: bool = False
+    attempts_used: int = Field(default=0, ge=0)
+    max_attempts: int = Field(default=3, ge=1)
+    attempts_remaining: int = Field(default=3, ge=0)
     provider: str = "not_run"
     similarity: float | None = None
     threshold: float | None = Field(default=None, description="Alias de compatibilidade de match_threshold.")

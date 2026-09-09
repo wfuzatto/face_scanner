@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Thresholds are deliberately external: this service never calibrates them.
     face_review_threshold: float | None = None
     face_match_threshold: float | None = None
+    # Tentativas biométricas efetivamente enviadas ao provider antes de escalar.
+    face_max_attempts: int = 3
     name_match_threshold: float = 88.0
     name_review_threshold: float = 72.0
     min_face_ratio: float = 0.12

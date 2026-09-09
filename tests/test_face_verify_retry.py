@@ -48,6 +48,8 @@ class _Preview:
 
 
 class _Provider:
+    requires_aligned_faces = False
+
     def __init__(self, status: str):
         self.status = status
 
@@ -90,22 +92,64 @@ def test_quality_review_allows_retry_and_keeps_session(monkeypatch):
         assert result.status == "review"
         assert result.retry_allowed is True
         assert result.identity_verified is False
+        assert result.attempts_used == 0
+        assert result.attempts_remaining == 3
         assert store.get(verification_id) is not None
     finally:
         store.close()
 
 
-@pytest.mark.parametrize("status", ["review", "mismatch", "match", "not_configured"])
-def test_provider_result_consumes_session_and_disallows_retry(monkeypatch, status):
+@pytest.mark.parametrize("status", ["review", "mismatch"])
+def test_review_and_mismatch_allow_two_retries_then_escalate(monkeypatch, status):
     store, verification_id = _configure(monkeypatch, acceptable=True, status=status)
     try:
-        result = asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
-        assert result.retry_allowed is False
-        assert store.get(verification_id) is None
-        if status != "match":
+        for attempt in range(1, 4):
+            result = asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
+            assert result.status == status
             assert result.identity_verified is False
+            assert result.attempts_used == attempt
+            assert result.max_attempts == 3
+            assert result.attempts_remaining == 3 - attempt
+            assert result.retry_allowed is (attempt < 3)
+            if attempt < 3:
+                assert store.get(verification_id) is not None
+            else:
+                assert store.get(verification_id) is None
+                assert "recepção" in result.message
+
         with pytest.raises(HTTPException) as exc:
             asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
         assert exc.value.status_code == 404
+    finally:
+        store.close()
+
+
+def test_match_consumes_session_immediately(monkeypatch):
+    store, verification_id = _configure(monkeypatch, acceptable=True, status="match")
+    try:
+        result = asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
+        assert result.status == "match"
+        assert result.identity_verified is True
+        assert result.retry_allowed is False
+        assert result.attempts_used == 1
+        assert result.attempts_remaining == 2
+        assert store.get(verification_id) is None
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
+        assert exc.value.status_code == 404
+    finally:
+        store.close()
+
+
+def test_not_configured_consumes_session_without_counting_user_attempt(monkeypatch):
+    store, verification_id = _configure(monkeypatch, acceptable=True, status="not_configured")
+    try:
+        result = asyncio.run(main._verify_face_impl(verification_id, object(), main.settings))
+        assert result.status == "not_configured"
+        assert result.identity_verified is False
+        assert result.retry_allowed is False
+        assert result.attempts_used == 0
+        assert result.attempts_remaining == 3
+        assert store.get(verification_id) is None
     finally:
         store.close()

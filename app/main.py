@@ -83,7 +83,9 @@ if provider_mode == "internal":
             )
     except (FileNotFoundError, RuntimeError, ValueError, cv2.error) as exc:
         provider_config_error = f"provider internal indisponível: {type(exc).__name__}: {exc}"
-        face_verification_provider = NotConfiguredFaceVerificationProvider("internal", "Provider interno não pôde ser inicializado.")
+        face_verification_provider = NotConfiguredFaceVerificationProvider(
+            "internal", "Provider interno não pôde ser inicializado."
+        )
         logger.error(provider_config_error)
 elif provider_mode == "mock":
     if settings.app_env.strip().lower() not in {"development", "homologation", "test"}:
@@ -105,7 +107,9 @@ elif provider_mode == "disabled":
     face_verification_provider = DisabledFaceVerificationProvider()
 else:
     provider_config_error = f"FACE_VERIFICATION_PROVIDER não suportado: {provider_mode}"
-    face_verification_provider = NotConfiguredFaceVerificationProvider(provider_mode or "unknown", "Provider biométrico inválido na configuração.")
+    face_verification_provider = NotConfiguredFaceVerificationProvider(
+        provider_mode or "unknown", "Provider biométrico inválido na configuração."
+    )
     logger.error(provider_config_error)
 
 liveness_provider = DisabledLivenessProvider()
@@ -190,6 +194,12 @@ def gate_info(document_name_status: str, identity_verified: bool, liveness: Live
     return CheckinGateInfo(allowed=gate.allowed, reasons=gate.reasons)
 
 
+def attempt_fields(session, cfg: Settings) -> tuple[int, int, int]:
+    max_attempts = max(1, int(cfg.face_max_attempts))
+    used = max(0, int(getattr(session, "attempts", 0)))
+    return used, max_attempts, max(0, max_attempts - used)
+
+
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(
@@ -253,9 +263,17 @@ async def _analyze_document_impl(
         elif analysis.portrait_source == "back":
             portrait_image = back_image
     # Provider preparation is independent from the optional 224x224 preview.
-    if verification_id and portrait_image is not None and detection is not None and getattr(face_verification_provider, "requires_aligned_faces", False):
+    if (
+        verification_id
+        and portrait_image is not None
+        and detection is not None
+        and getattr(face_verification_provider, "requires_aligned_faces", False)
+    ):
         try:
-            document_faces.put(verification_id, face_verification_provider.prepare_face(portrait_image, detection))
+            document_faces.put(
+                verification_id,
+                face_verification_provider.prepare_face(portrait_image, detection),
+            )
         except (ValueError, RuntimeError, cv2.error) as exc:
             logger.warning("internal document preparation failed error_type=%s", type(exc).__name__)
     portrait_height = int(portrait_image.shape[0]) if portrait_image is not None else None
@@ -334,12 +352,24 @@ async def _preview_face_impl(selfie: UploadFile, cfg: Settings) -> FacePreviewRe
             bbox=None,
             detector_score=None,
             landmarks=None,
-            quality=ImageQuality(blur_score=0, brightness=0, face_ratio=0, acceptable=False, issues=[issue]),
-            message="Posicione um rosto dentro da área indicada." if not detections else "A captura deve conter somente uma pessoa.",
+            quality=ImageQuality(
+                blur_score=0,
+                brightness=0,
+                face_ratio=0,
+                acceptable=False,
+                issues=[issue],
+            ),
+            message=(
+                "Posicione um rosto dentro da área indicada."
+                if not detections
+                else "A captura deve conter somente uma pessoa."
+            ),
         )
 
     detection = detections[0]
-    quality = ImageQuality(**face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score))
+    quality = ImageQuality(
+        **face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score)
+    )
     return FacePreviewResponse(
         request_id=request_id,
         face_count=1,
@@ -364,6 +394,8 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
     if current_session is None:
         raise HTTPException(status_code=404, detail="Sessão inexistente ou expirada")
 
+    attempts_used, max_attempts, attempts_remaining = attempt_fields(current_session, cfg)
+
     image, raw = await read_image(selfie, cfg)
     h, w = image.shape[:2]
     detections = face_detector.detect(image) if face_detector.ready else []
@@ -375,12 +407,21 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
             status="review",
             identity_verified=False,
             retry_allowed=True,
+            attempts_used=attempts_used,
+            max_attempts=max_attempts,
+            attempts_remaining=attempts_remaining,
             provider="not_run",
             bbox=None,
             image_width=w,
             image_height=h,
             landmarks=None,
-            quality=ImageQuality(blur_score=0, brightness=0, face_ratio=0, acceptable=False, issues=issues),
+            quality=ImageQuality(
+                blur_score=0,
+                brightness=0,
+                face_ratio=0,
+                acceptable=False,
+                issues=issues,
+            ),
             liveness=LivenessResult(),
             checkin_gate=gate_info(current_session.name_status, False, LivenessResult()),
             message="A captura deve conter exatamente um rosto. Refaça a foto.",
@@ -388,7 +429,9 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
 
     detection = detections[0]
     aligned = alignment_info(image, detection)
-    quality = ImageQuality(**face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score))
+    quality = ImageQuality(
+        **face_detector.quality(image, detection, cfg.min_face_ratio, cfg.min_blur_score)
+    )
     if not quality.acceptable:
         return FaceVerifyResponse(
             request_id=request_id,
@@ -396,6 +439,9 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
             status="review",
             identity_verified=False,
             retry_allowed=True,
+            attempts_used=attempts_used,
+            max_attempts=max_attempts,
+            attempts_remaining=attempts_remaining,
             provider="not_run",
             bbox=detection.bbox,
             image_width=w,
@@ -408,34 +454,63 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
             message="Qualidade insuficiente. Refaça a captura.",
         )
 
-    session = sessions.consume(verification_id)
-    if session is None:
-        raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
-
     live_result = liveness_info(verification_id, raw)
     provider_requires_faces = getattr(face_verification_provider, "requires_aligned_faces", False)
-    document_face = document_faces.consume(verification_id) if provider_requires_faces else None
+    document_face = document_faces.get(verification_id) if provider_requires_faces else None
     live_face = None
+
     if provider_requires_faces and document_face is None:
+        sessions.consume(verification_id)
+        document_faces.consume(verification_id)
         return FaceVerifyResponse(
-            request_id=request_id, verification_id=verification_id, status="not_configured",
-            identity_verified=False, retry_allowed=False, provider=getattr(face_verification_provider, "provider", provider_mode),
-            bbox=detection.bbox, image_width=w, image_height=h, landmarks=detection.landmarks, alignment=aligned,
-            quality=quality, liveness=live_result, checkin_gate=gate_info(session.name_status, False, live_result),
+            request_id=request_id,
+            verification_id=verification_id,
+            status="not_configured",
+            identity_verified=False,
+            retry_allowed=False,
+            attempts_used=attempts_used,
+            max_attempts=max_attempts,
+            attempts_remaining=attempts_remaining,
+            provider=getattr(face_verification_provider, "provider", provider_mode),
+            bbox=detection.bbox,
+            image_width=w,
+            image_height=h,
+            landmarks=detection.landmarks,
+            alignment=aligned,
+            quality=quality,
+            liveness=live_result,
+            checkin_gate=gate_info(current_session.name_status, False, live_result),
             message="Face documental temporária indisponível ou expirada.",
         )
+
     if provider_requires_faces:
         try:
             live_face = face_verification_provider.prepare_face(image, detection)
         except (ValueError, RuntimeError, cv2.error) as exc:
             logger.warning("internal live preparation failed error_type=%s", type(exc).__name__)
+            sessions.consume(verification_id)
+            document_faces.consume(verification_id)
             return FaceVerifyResponse(
-                request_id=request_id, verification_id=verification_id, status="not_configured",
-                identity_verified=False, retry_allowed=False, provider=getattr(face_verification_provider, "provider", provider_mode),
-                bbox=detection.bbox, image_width=w, image_height=h, landmarks=detection.landmarks, alignment=aligned,
-                quality=quality, liveness=live_result, checkin_gate=gate_info(session.name_status, False, live_result),
+                request_id=request_id,
+                verification_id=verification_id,
+                status="not_configured",
+                identity_verified=False,
+                retry_allowed=False,
+                attempts_used=attempts_used,
+                max_attempts=max_attempts,
+                attempts_remaining=attempts_remaining,
+                provider=getattr(face_verification_provider, "provider", provider_mode),
+                bbox=detection.bbox,
+                image_width=w,
+                image_height=h,
+                landmarks=detection.landmarks,
+                alignment=aligned,
+                quality=quality,
+                liveness=live_result,
+                checkin_gate=gate_info(current_session.name_status, False, live_result),
                 message="Não foi possível preparar a face para o modelo biométrico.",
             )
+
     provider_result = face_verification_provider.verify(
         verification_id=verification_id,
         selfie=raw,
@@ -450,16 +525,53 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
         provider_status = "review"
 
     message = provider_result.message
-    if not identity_verified and provider_status == "not_configured":
-        message = "Captura com qualidade aprovada, mas a identidade NÃO foi verificada: provider biométrico não configurado."
+    retry_allowed = False
+    session_for_gate = current_session
 
-    gate = gate_info(session.name_status, identity_verified, live_result)
+    if provider_status == "not_configured":
+        sessions.consume(verification_id)
+        document_faces.consume(verification_id)
+        message = (
+            "Captura com qualidade aprovada, mas a identidade NÃO foi verificada: "
+            "provider biométrico não configurado."
+        )
+    else:
+        recorded_session, exhausted = sessions.record_attempt(verification_id, max_attempts)
+        if recorded_session is None:
+            raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
+
+        session_for_gate = recorded_session
+        attempts_used = recorded_session.attempts
+        attempts_remaining = max(0, max_attempts - attempts_used)
+
+        if identity_verified:
+            if not exhausted:
+                sessions.consume(verification_id)
+            document_faces.consume(verification_id)
+        elif provider_status in {"review", "mismatch"}:
+            retry_allowed = not exhausted
+            if exhausted:
+                document_faces.consume(verification_id)
+                message = (
+                    f"{message} Limite de {max_attempts} tentativas atingido; "
+                    "solicite atendimento da recepção."
+                )
+            else:
+                message = (
+                    f"{message} Tentativa {attempts_used} de {max_attempts}; "
+                    f"restam {attempts_remaining}. Refaça a captura."
+                )
+
+    gate = gate_info(session_for_gate.name_status, identity_verified, live_result)
     return FaceVerifyResponse(
         request_id=request_id,
         verification_id=verification_id,
         status=provider_status,
         identity_verified=identity_verified,
-        retry_allowed=False,
+        retry_allowed=retry_allowed,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        attempts_remaining=attempts_remaining,
         provider=provider_result.provider,
         similarity=provider_result.similarity,
         threshold=provider_result.match_threshold,

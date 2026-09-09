@@ -13,6 +13,7 @@ class VerificationSession:
     expires_at: float
     reservation_id: str | None
     name_status: str
+    attempts: int = 0
 
 
 class SessionStore:
@@ -49,10 +50,20 @@ class SessionStore:
                 created_at REAL NOT NULL,
                 expires_at REAL NOT NULL,
                 reservation_id TEXT,
-                name_status TEXT NOT NULL
+                name_status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        columns = {
+            row["name"]
+            for row in self._db.execute("PRAGMA table_info(verification_sessions)").fetchall()
+        }
+        if "attempts" not in columns:
+            self._db.execute(
+                "ALTER TABLE verification_sessions "
+                "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+            )
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_verification_sessions_expires_at "
             "ON verification_sessions(expires_at)"
@@ -72,6 +83,7 @@ class SessionStore:
             expires_at=float(row["expires_at"]),
             reservation_id=row["reservation_id"],
             name_status=row["name_status"],
+            attempts=int(row["attempts"]),
         )
 
     def create(self, reservation_id: str | None, name_status: str) -> VerificationSession:
@@ -82,6 +94,7 @@ class SessionStore:
             expires_at=now + self.ttl_seconds,
             reservation_id=reservation_id,
             name_status=name_status,
+            attempts=0,
         )
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
@@ -90,8 +103,8 @@ class SessionStore:
                 self._db.execute(
                     """
                     INSERT INTO verification_sessions
-                        (id, created_at, expires_at, reservation_id, name_status)
-                    VALUES (?, ?, ?, ?, ?)
+                        (id, created_at, expires_at, reservation_id, name_status, attempts)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.id,
@@ -99,6 +112,7 @@ class SessionStore:
                         item.expires_at,
                         item.reservation_id,
                         item.name_status,
+                        item.attempts,
                     ),
                 )
                 self._db.execute("COMMIT")
@@ -114,7 +128,7 @@ class SessionStore:
             try:
                 self._purge_locked()
                 row = self._db.execute(
-                    "SELECT id, created_at, expires_at, reservation_id, name_status "
+                    "SELECT id, created_at, expires_at, reservation_id, name_status, attempts "
                     "FROM verification_sessions WHERE id = ?",
                     (session_id,),
                 ).fetchone()
@@ -124,15 +138,58 @@ class SessionStore:
                 self._db.execute("ROLLBACK")
                 raise
 
-    def consume(self, session_id: str) -> VerificationSession | None:
-        """Consome a sessão atomicamente; uma sessão nunca pode ser usada duas vezes."""
+    def record_attempt(
+        self,
+        session_id: str,
+        max_attempts: int = 3,
+    ) -> tuple[VerificationSession | None, bool]:
+        """Registra uma tentativa biométrica e encerra atomicamente ao atingir o limite.
+
+        Retorna ``(sessão_atualizada, limite_atingido)``. Apenas metadados de
+        workflow são persistidos; fotos e embeddings continuam fora do SQLite.
+        """
+        max_attempts = max(1, int(max_attempts))
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 now = time.time()
                 self._purge_locked(now)
                 row = self._db.execute(
-                    "SELECT id, created_at, expires_at, reservation_id, name_status "
+                    "SELECT id, created_at, expires_at, reservation_id, name_status, attempts "
+                    "FROM verification_sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    self._db.execute("COMMIT")
+                    return None, True
+
+                item = self._from_row(row)
+                item.attempts += 1
+                exhausted = item.attempts >= max_attempts
+                if exhausted:
+                    self._db.execute(
+                        "DELETE FROM verification_sessions WHERE id = ?", (session_id,)
+                    )
+                else:
+                    self._db.execute(
+                        "UPDATE verification_sessions SET attempts = ? WHERE id = ?",
+                        (item.attempts, session_id),
+                    )
+                self._db.execute("COMMIT")
+                return item, exhausted
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def consume(self, session_id: str) -> VerificationSession | None:
+        """Consome a sessão atomicamente; uma sessão encerrada não pode ser reutilizada."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                now = time.time()
+                self._purge_locked(now)
+                row = self._db.execute(
+                    "SELECT id, created_at, expires_at, reservation_id, name_status, attempts "
                     "FROM verification_sessions WHERE id = ?",
                     (session_id,),
                 ).fetchone()
