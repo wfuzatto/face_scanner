@@ -9,15 +9,24 @@ class FaceVerificationResult:
     identity_verified: bool
     message: str
     similarity: float | None = None
-    threshold: float | None = None
+    match_threshold: float | None = None
     review_threshold: float | None = None
+    # Alias histórico para match_threshold.
+    threshold: float | None = None
+    metric: str | None = None
+    model: str | None = None
+    model_version: str | None = None
+    processing_ms: float | None = None
+    embedding_document_ms: float | None = None
+    embedding_live_ms: float | None = None
+    similarity_ms: float | None = None
 
 
 class FaceVerificationProvider(Protocol):
     """Contrato para um provider biométrico externo/homologado.
 
-    O provider é responsável pela verificação de identidade. Este repositório
-    apenas prepara a captura, valida qualidade e consome o resultado devolvido.
+    O Face Scanner prepara a captura, valida qualidade e consome o resultado.
+    A implementação real do provider permanece desacoplada deste repositório.
     """
 
     def verify(self, *, verification_id: str, selfie: bytes) -> FaceVerificationResult:
