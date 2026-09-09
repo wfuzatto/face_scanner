@@ -12,6 +12,13 @@ MODEL_URLS = (
     f"https://github.com/opencv/opencv_zoo/raw/{OPENCV_ZOO_COMMIT}/models/face_detection_yunet/{MODEL_NAME}",
     f"https://media.githubusercontent.com/media/opencv/opencv_zoo/{OPENCV_ZOO_COMMIT}/models/face_detection_yunet/{MODEL_NAME}",
 )
+EMBEDDING_MODEL_NAME = "face_recognition_sface_2021dec.onnx"
+EMBEDDING_MODEL_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+EMBEDDING_MODEL_SIZE = 38696353
+EMBEDDING_MODEL_URLS = (
+    f"https://github.com/opencv/opencv_zoo/raw/{OPENCV_ZOO_COMMIT}/models/face_recognition_sface/{EMBEDDING_MODEL_NAME}",
+    f"https://media.githubusercontent.com/media/opencv/opencv_zoo/{OPENCV_ZOO_COMMIT}/models/face_recognition_sface/{EMBEDDING_MODEL_NAME}",
+)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -20,6 +27,10 @@ def sha256_bytes(data: bytes) -> str:
 
 def valid_model(data: bytes) -> bool:
     return len(data) == MODEL_SIZE and sha256_bytes(data) == MODEL_SHA256
+
+
+def valid_embedding_model(data: bytes) -> bool:
+    return len(data) == EMBEDDING_MODEL_SIZE and sha256_bytes(data) == EMBEDDING_MODEL_SHA256
 
 
 def download(url: str) -> bytes:
@@ -32,6 +43,22 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     model_dir = root / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
+    embedding_target = model_dir / EMBEDDING_MODEL_NAME
+    if not embedding_target.exists() or not valid_embedding_model(embedding_target.read_bytes()):
+        last_error: Exception | None = None
+        for url in EMBEDDING_MODEL_URLS:
+            try:
+                data = download(url)
+                if data.startswith(b"version https://git-lfs.github.com/spec") or not valid_embedding_model(data):
+                    raise RuntimeError("modelo SFace inválido")
+                tmp = embedding_target.with_suffix(embedding_target.suffix + ".tmp")
+                tmp.write_bytes(data)
+                tmp.replace(embedding_target)
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise RuntimeError(f"Não foi possível obter o modelo SFace validado: {last_error}")
     target = model_dir / MODEL_NAME
 
     if target.exists():

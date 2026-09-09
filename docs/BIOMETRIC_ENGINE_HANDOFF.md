@@ -1,16 +1,19 @@
 # Handoff do motor biométrico
 
-O Face Scanner 0.4.0 mantém o fluxo documental e de captura pronto para integração com um provider biométrico externo/homologado, sem confirmar identidade por conta própria.
+O Face Scanner 0.5.0 contém a integração local do provider interno fornecido,
+mantendo `disabled` como padrão e fail-closed quando o modelo ou a política não
+estiverem prontos.
 
 ## Já implementado
 
 - YuNet para detecção/localização facial.
 - Cinco landmarks por face: olhos, nariz e cantos da boca.
-- Alinhamento geométrico para prévia de homologação.
+- `FaceAlignmentService` para prévia/UI e `SFaceEmbeddingEngine` com
+  `FaceRecognizerSF.alignCrop()` para o modelo.
 - Qualidade: nitidez, brilho, proporção da face e quantidade de rostos.
 - Sessões temporárias com consumo único após a etapa de qualidade.
 - `retry_allowed=true` apenas quando a captura pode ser refeita sem consumir a sessão.
-- Contrato de provider em `app/providers/face_verification.py`.
+- `BiometricPipeline` e `InternalFaceVerificationProvider`.
 - Estados: `match`, `review`, `mismatch`, `not_configured`.
 - `identity_verified` fail-closed.
 - Metadados opcionais de provider/modelo/métrica/tempos na resposta.
@@ -19,11 +22,14 @@ O Face Scanner 0.4.0 mantém o fluxo documental e de captura pronto para integra
 
 ## Provider
 
-O provider padrão é `DisabledFaceVerificationProvider`, portanto a captura pode ser homologada sem que o sistema afirme identidade.
+O provider padrão é `DisabledFaceVerificationProvider`. `internal` requer o
+modelo SFace e thresholds externos válidos; `mock` continua exclusivamente de
+homologação da interface.
 
 Uma implementação externa deve respeitar `FaceVerificationProvider.verify(...)` e retornar `FaceVerificationResult`.
 
-`identity_verified` só pode ser verdadeiro quando o status retornado for `match`. O Face Scanner normaliza qualquer inconsistência para fail-closed.
+`identity_verified` só pode ser verdadeiro quando o status retornado for
+`match`. Thresholds não são calibrados nem escolhidos por este repositório.
 
 `match_threshold` é o nome canônico do limite de match. O campo `threshold` permanece apenas como alias de compatibilidade.
 

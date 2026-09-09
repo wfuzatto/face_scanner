@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -11,20 +10,6 @@ class EmbeddingOutput:
     vector: np.ndarray
     model: str
     model_version: str
-
-
-@dataclass(frozen=True)
-class SimilarityOutput:
-    score: float
-    metric: str
-
-
-@dataclass(frozen=True)
-class DecisionOutput:
-    status: str
-    identity_verified: bool
-    threshold: float | None = None
-    review_threshold: float | None = None
 
 
 class EmbeddingEngine(Protocol):
@@ -39,16 +24,16 @@ class EmbeddingEngine(Protocol):
 
 
 class SimilarityEngine(Protocol):
-    """Ponto de extensão para a métrica escolhida pelo motor biométrico."""
+    """Compara somente vetores numéricos e retorna o score."""
 
-    def compare(self, document: EmbeddingOutput, live: EmbeddingOutput) -> SimilarityOutput:
+    def compare(self, vector_a: np.ndarray, vector_b: np.ndarray) -> float:
         ...
 
 
 class DecisionPolicy(Protocol):
-    """Ponto de extensão para a política match/review/mismatch calibrada externamente."""
+    """Transforma um score em faixas calibradas externamente."""
 
-    def decide(self, similarity: SimilarityOutput) -> DecisionOutput:
+    def decide(self, score: float):
         ...
 
 

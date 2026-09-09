@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     face_detection_threshold: float = 0.85
     face_verification_provider: str = "disabled"
     face_mock_status: str = "review"
+    face_embedding_model_path: Path = Path("models/face_recognition_sface_2021dec.onnx")
+    face_embedding_model_name: str = "OpenCV SFace"
+    face_embedding_model_version: str = "2021dec"
+    # Thresholds are deliberately external: this service never calibrates them.
+    face_review_threshold: float | None = None
+    face_match_threshold: float | None = None
     name_match_threshold: float = 88.0
     name_review_threshold: float = 72.0
     min_face_ratio: float = 0.12

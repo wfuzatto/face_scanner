@@ -13,6 +13,8 @@ class FaceDetection:
     score: float
     face_ratio: float
     landmarks: dict[str, list[float]]
+    # Original FaceDetectorYN row; required by SFace alignCrop and never exposed.
+    face_box: np.ndarray | None = None
 
 
 class FaceDetector:
@@ -83,6 +85,7 @@ class FaceDetector:
         image_area = float(max(w * h, 1))
         detections: list[FaceDetection] = []
         for row in faces:
+            face_box = np.asarray(row, dtype=np.float32).reshape(-1).copy()
             x = max(0, int(row[0]))
             y = max(0, int(row[1]))
             fw = max(0, min(int(row[2]), w - x))
@@ -93,6 +96,7 @@ class FaceDetector:
                     score=float(row[-1]),
                     face_ratio=float((fw * fh) / image_area),
                     landmarks=self._landmarks_from_yunet(row),
+                    face_box=face_box,
                 )
             )
         return sorted(detections, key=lambda d: d.bbox[2] * d.bbox[3], reverse=True)

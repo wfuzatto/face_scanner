@@ -1,5 +1,13 @@
+import logging
 from dataclasses import dataclass
 from typing import Protocol
+
+import numpy as np
+
+from app.biometric.pipeline import BiometricPipeline
+from app.services.face_engine import FaceDetection
+
+logger = logging.getLogger("face_scanner.biometric")
 
 
 @dataclass
@@ -29,14 +37,23 @@ class FaceVerificationProvider(Protocol):
     A implementação real do provider permanece desacoplada deste repositório.
     """
 
-    def verify(self, *, verification_id: str, selfie: bytes) -> FaceVerificationResult:
+    def verify(
+        self,
+        *,
+        verification_id: str,
+        selfie: bytes,
+        document_face: np.ndarray | None = None,
+        live_face: np.ndarray | None = None,
+    ) -> FaceVerificationResult:
         ...
 
 
 class DisabledFaceVerificationProvider:
     """Provider padrão: nenhuma identidade é confirmada sem integração externa."""
 
-    def verify(self, *, verification_id: str, selfie: bytes) -> FaceVerificationResult:
+    requires_aligned_faces = False
+
+    def verify(self, *, verification_id: str, selfie: bytes, document_face=None, live_face=None) -> FaceVerificationResult:
         return FaceVerificationResult(
             status="not_configured",
             provider="disabled",
@@ -67,7 +84,9 @@ class MockFaceVerificationProvider:
             raise ValueError(f"FACE_MOCK_STATUS inválido: {status}")
         self.status = normalized
 
-    def verify(self, *, verification_id: str, selfie: bytes) -> FaceVerificationResult:
+    requires_aligned_faces = False
+
+    def verify(self, *, verification_id: str, selfie: bytes, document_face=None, live_face=None) -> FaceVerificationResult:
         score = self._SCORES[self.status]
         identity_verified = self.status == "match"
         return FaceVerificationResult(
@@ -88,4 +107,65 @@ class MockFaceVerificationProvider:
             embedding_document_ms=0.0,
             embedding_live_ms=0.0,
             similarity_ms=0.0,
+        )
+
+
+class NotConfiguredFaceVerificationProvider:
+    """Represents a requested but unusable provider without claiming verification."""
+
+    requires_aligned_faces = False
+
+    def __init__(self, provider: str, message: str) -> None:
+        self.provider = provider
+        self.message = message
+
+    def verify(self, *, verification_id: str, selfie: bytes, document_face=None, live_face=None) -> FaceVerificationResult:
+        return FaceVerificationResult("not_configured", self.provider, False, self.message)
+
+
+class InternalFaceVerificationProvider:
+    """Adapter around the supplied internal SFace pipeline."""
+
+    provider = "internal"
+    requires_aligned_faces = True
+
+    def __init__(self, pipeline: BiometricPipeline) -> None:
+        self.pipeline = pipeline
+
+    def prepare_face(self, image: np.ndarray, detection: FaceDetection) -> np.ndarray:
+        if detection.face_box is None:
+            raise ValueError("SFace requires the complete FaceDetectorYN face_box")
+        return self.pipeline.embedding_engine.align_crop(image, detection.face_box)
+
+    def verify(self, *, verification_id: str, selfie: bytes, document_face: np.ndarray | None = None, live_face: np.ndarray | None = None) -> FaceVerificationResult:
+        if document_face is None or live_face is None:
+            return FaceVerificationResult("not_configured", self.provider, False, "Faces temporárias indisponíveis para o provider interno.")
+        try:
+            result = self.pipeline.compare(document_face, live_face)
+        except Exception as exc:
+            engine = getattr(self.pipeline, "embedding_engine", None)
+            model = str(getattr(engine, "model_name", "unknown"))[:120]
+            detail = " ".join(str(exc).split())[:240]
+            logger.warning(
+                "biometric pipeline failed provider=%s model=%s error_type=%s error=%s",
+                self.provider, model, type(exc).__name__, detail or "no technical message",
+            )
+            return FaceVerificationResult("review", self.provider, False, "Falha no motor biométrico; identidade não verificada.")
+        status = result.status if result.status in {"match", "review", "mismatch"} else "review"
+        return FaceVerificationResult(
+            status=status,
+            provider=self.provider,
+            identity_verified=status == "match" and bool(result.identity_verified),
+            message="Comparação facial concluída.",
+            similarity=result.similarity,
+            match_threshold=result.match_threshold,
+            review_threshold=result.review_threshold,
+            threshold=result.match_threshold,
+            metric=result.metric,
+            model=result.model,
+            model_version=result.model_version,
+            processing_ms=result.total_ms,
+            embedding_document_ms=result.embedding_document_ms,
+            embedding_live_ms=result.embedding_live_ms,
+            similarity_ms=result.similarity_ms,
         )

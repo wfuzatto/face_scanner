@@ -2,13 +2,23 @@ import logging
 import secrets
 from pathlib import Path
 
+import cv2
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
-from app.providers.face_verification import DisabledFaceVerificationProvider, MockFaceVerificationProvider
+from app.biometric.decision_policy import ThreeWayDecisionPolicy
+from app.biometric.embedding_engine import SFaceEmbeddingEngine
+from app.biometric.pipeline import BiometricPipeline
+from app.biometric.similarity_engine import CosineSimilarityEngine
+from app.providers.face_verification import (
+    DisabledFaceVerificationProvider,
+    InternalFaceVerificationProvider,
+    MockFaceVerificationProvider,
+    NotConfiguredFaceVerificationProvider,
+)
 from app.providers.liveness import DisabledLivenessProvider
 from app.schemas import (
     CheckinGateInfo,
@@ -28,9 +38,10 @@ from app.services.face_engine import FaceDetector
 from app.services.image_utils import InvalidImage, decode_image, limit_long_edge
 from app.services.ocr import OCRService
 from app.services.session_store import SessionStore
+from app.services.temporary_face_store import TemporaryFaceStore
 from app.services.verification_gate import evaluate_checkin_gate
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("face_scanner")
 
@@ -45,10 +56,32 @@ document_service = DocumentService(
     settings.name_review_threshold,
 )
 sessions = SessionStore(settings.session_ttl_seconds, settings.session_db_path)
+document_faces = TemporaryFaceStore(settings.session_ttl_seconds)
 
 provider_mode = settings.face_provider_mode
 provider_config_error: str | None = None
-if provider_mode == "mock":
+embedding_model_ready = False
+thresholds_configured = False
+if provider_mode == "internal":
+    try:
+        embedding_engine = SFaceEmbeddingEngine(
+            settings.face_embedding_model_path,
+            settings.face_embedding_model_version,
+            settings.face_embedding_model_name,
+        )
+        policy = ThreeWayDecisionPolicy(settings.face_review_threshold, settings.face_match_threshold)
+        if not policy.calibrated:
+            raise ValueError("FACE_REVIEW_THRESHOLD e FACE_MATCH_THRESHOLD devem ser configurados")
+        face_verification_provider = InternalFaceVerificationProvider(
+            BiometricPipeline(embedding_engine, CosineSimilarityEngine(), policy)
+        )
+        embedding_model_ready = embedding_engine.ready
+        thresholds_configured = policy.calibrated
+    except (FileNotFoundError, RuntimeError, ValueError, cv2.error) as exc:
+        provider_config_error = f"provider internal indisponível: {type(exc).__name__}: {exc}"
+        face_verification_provider = NotConfiguredFaceVerificationProvider("internal", "Provider interno não pôde ser inicializado.")
+        logger.error(provider_config_error)
+elif provider_mode == "mock":
     if settings.app_env.strip().lower() not in {"development", "homologation", "test"}:
         provider_config_error = "provider mock é permitido somente em development/homologation/test"
         face_verification_provider = DisabledFaceVerificationProvider()
@@ -68,7 +101,7 @@ elif provider_mode == "disabled":
     face_verification_provider = DisabledFaceVerificationProvider()
 else:
     provider_config_error = f"FACE_VERIFICATION_PROVIDER não suportado: {provider_mode}"
-    face_verification_provider = DisabledFaceVerificationProvider()
+    face_verification_provider = NotConfiguredFaceVerificationProvider(provider_mode or "unknown", "Provider biométrico inválido na configuração.")
     logger.error(provider_config_error)
 
 liveness_provider = DisabledLivenessProvider()
@@ -164,17 +197,21 @@ def index():
 @app.get("/api/v1/health", response_model=HealthResponse)
 def health():
     core_ready = ocr_service.ready() and face_detector.ready
-    mock_ready = provider_mode == "mock" and provider_config_error is None
+    provider_configured = (
+        (provider_mode == "mock" and provider_config_error is None)
+        or isinstance(face_verification_provider, InternalFaceVerificationProvider)
+    )
+    provider_ready = provider_mode in {"disabled", "mock"} or provider_configured
     return HealthResponse(
-        status="ok" if core_ready and provider_config_error is None else "degraded",
+        status="ok" if core_ready and provider_ready and provider_config_error is None else "degraded",
         version=VERSION,
         ocr_ready=ocr_service.ready(),
         face_engine_ready=face_detector.ready,
         face_detector_model=settings.face_detector_model.exists(),
-        face_recognizer_model=False,
-        embedding_model_ready=False,
-        provider_configured=mock_ready,
-        thresholds_configured=mock_ready,
+        face_recognizer_model=embedding_model_ready,
+        embedding_model_ready=embedding_model_ready,
+        provider_configured=provider_configured,
+        thresholds_configured=thresholds_configured,
         sessions_active=sessions.count(),
     )
 
@@ -211,6 +248,12 @@ async def _analyze_document_impl(
             portrait_image = front_image
         elif analysis.portrait_source == "back":
             portrait_image = back_image
+    # Provider preparation is independent from the optional 224x224 preview.
+    if verification_id and portrait_image is not None and detection is not None and getattr(face_verification_provider, "requires_aligned_faces", False):
+        try:
+            document_faces.put(verification_id, face_verification_provider.prepare_face(portrait_image, detection))
+        except (ValueError, RuntimeError, cv2.error) as exc:
+            logger.warning("internal document preparation failed error_type=%s", type(exc).__name__)
     portrait_height = int(portrait_image.shape[0]) if portrait_image is not None else None
     portrait_width = int(portrait_image.shape[1]) if portrait_image is not None else None
 
@@ -366,9 +409,34 @@ async def _verify_face_impl(verification_id: str, selfie: UploadFile, cfg: Setti
         raise HTTPException(status_code=409, detail="Sessão já utilizada ou expirada")
 
     live_result = liveness_info(verification_id, raw)
+    provider_requires_faces = getattr(face_verification_provider, "requires_aligned_faces", False)
+    document_face = document_faces.consume(verification_id) if provider_requires_faces else None
+    live_face = None
+    if provider_requires_faces and document_face is None:
+        return FaceVerifyResponse(
+            request_id=request_id, verification_id=verification_id, status="not_configured",
+            identity_verified=False, retry_allowed=False, provider=getattr(face_verification_provider, "provider", provider_mode),
+            bbox=detection.bbox, image_width=w, image_height=h, landmarks=detection.landmarks, alignment=aligned,
+            quality=quality, liveness=live_result, checkin_gate=gate_info(session.name_status, False, live_result),
+            message="Face documental temporária indisponível ou expirada.",
+        )
+    if provider_requires_faces:
+        try:
+            live_face = face_verification_provider.prepare_face(image, detection)
+        except (ValueError, RuntimeError, cv2.error) as exc:
+            logger.warning("internal live preparation failed error_type=%s", type(exc).__name__)
+            return FaceVerifyResponse(
+                request_id=request_id, verification_id=verification_id, status="not_configured",
+                identity_verified=False, retry_allowed=False, provider=getattr(face_verification_provider, "provider", provider_mode),
+                bbox=detection.bbox, image_width=w, image_height=h, landmarks=detection.landmarks, alignment=aligned,
+                quality=quality, liveness=live_result, checkin_gate=gate_info(session.name_status, False, live_result),
+                message="Não foi possível preparar a face para o modelo biométrico.",
+            )
     provider_result = face_verification_provider.verify(
         verification_id=verification_id,
         selfie=raw,
+        document_face=document_face,
+        live_face=live_face,
     )
 
     allowed_statuses = {"match", "review", "mismatch", "not_configured"}
