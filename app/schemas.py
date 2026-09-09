@@ -92,10 +92,19 @@ class FaceVerifyResponse(BaseModel):
     verification_id: str
     status: FaceStatus
     identity_verified: bool = False
+    retry_allowed: bool = False
     provider: str = "not_run"
     similarity: float | None = None
-    threshold: float | None = None
+    threshold: float | None = Field(default=None, description="Alias de compatibilidade de match_threshold.")
     review_threshold: float | None = None
+    match_threshold: float | None = None
+    metric: str | None = None
+    model: str | None = None
+    model_version: str | None = None
+    processing_ms: float | None = None
+    embedding_document_ms: float | None = None
+    embedding_live_ms: float | None = None
+    similarity_ms: float | None = None
     bbox: list[int] | None = None
     image_width: int | None = None
     image_height: int | None = None
@@ -114,4 +123,7 @@ class HealthResponse(BaseModel):
     face_engine_ready: bool
     face_detector_model: bool
     face_recognizer_model: bool
+    embedding_model_ready: bool = False
+    provider_configured: bool = False
+    thresholds_configured: bool = False
     sessions_active: int
