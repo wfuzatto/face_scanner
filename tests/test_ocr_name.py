@@ -1,4 +1,4 @@
-from app.services.ocr import OCRLine, OCRResult, extract_cnh_name_candidate, extract_name_candidate
+from app.services.ocr import OCRLine, OCRResult, extract_cnh_name_candidate, extract_name_candidate, extract_cpf_candidate
 
 
 def test_extracts_cnh_holder_name_below_label():
@@ -44,3 +44,11 @@ def test_field_label_is_not_selected_as_name():
     )
 
     assert extract_name_candidate(ocr) == "CARLOS EDUARDO SILVA"
+
+
+def test_extracts_valid_cpf_from_identity_ocr():
+    assert extract_cpf_candidate("CPF 529.982.247-25") == "52998224725"
+
+
+def test_rejects_invalid_cpf_from_identity_ocr():
+    assert extract_cpf_candidate("CPF 529.982.247-24") is None
