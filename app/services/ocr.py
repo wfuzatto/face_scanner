@@ -333,6 +333,29 @@ def extract_name_candidate(ocr: OCRResult, expected_name: str | None = None) -> 
     )
 
 
+def _valid_cpf(value: str) -> bool:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) != 11 or len(set(digits)) == 1:
+        return False
+
+    def digit(length: int) -> int:
+        total = sum(int(digits[i]) * (length + 1 - i) for i in range(length))
+        result = (total * 10) % 11
+        return 0 if result == 10 else result
+
+    return digit(9) == int(digits[9]) and digit(10) == int(digits[10])
+
+
+def extract_cpf_candidate(text: str) -> str | None:
+    raw = str(text or "")
+    candidates = re.findall(r"(?<!\d)(?:\d{3}[.\s-]?\d{3}[.\s-]?\d{3}[-\s]?\d{2}|\d{11})(?!\d)", raw)
+    for candidate in candidates:
+        digits = re.sub(r"\D", "", candidate)
+        if _valid_cpf(digits):
+            return digits
+    return None
+
+
 def parse_document_fields(
     ocr: OCRResult,
     document_type: str,
@@ -344,6 +367,7 @@ def parse_document_fields(
         if mrz:
             return {
                 "name": mrz.name,
+                "cpf": None,
                 "document_number": mrz.document_number,
                 "nationality": mrz.nationality,
                 "birth_date": mrz.birth_date,
@@ -351,6 +375,7 @@ def parse_document_fields(
             }
     return {
         "name": extract_name_candidate(ocr, expected_name),
+        "cpf": extract_cpf_candidate(ocr.text),
         "document_number": None,
         "nationality": None,
         "birth_date": None,

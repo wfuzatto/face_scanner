@@ -83,14 +83,16 @@ class DocumentService:
             else:
                 warnings.append("cnh_name_region_not_found")
 
-        if not fields.get("name") and back_ocr is not None:
+        if back_ocr is not None:
             back_fields = parse_document_fields(
                 back_ocr,
                 document_type,
                 expected_name,
             )
-            if back_fields.get("name"):
+            if not fields.get("name") and back_fields.get("name"):
                 fields["name"] = back_fields["name"]
+            if not fields.get("cpf") and back_fields.get("cpf"):
+                fields["cpf"] = back_fields["cpf"]
 
         name_validation = match_name(
             expected_name,
