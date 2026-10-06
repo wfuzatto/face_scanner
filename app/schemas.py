@@ -36,6 +36,7 @@ class PortraitInfo(BaseModel):
 
 class DocumentFields(BaseModel):
     name: str | None = None
+    cpf: str | None = None
     document_number: str | None = None
     nationality: str | None = None
     birth_date: str | None = None
